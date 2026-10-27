@@ -165,6 +165,8 @@ function fillSettings(c) {
   form.kill_gb.value = +(c.kill_mb / 1024).toFixed(2);
   form.total_gb.value = +(c.total_mb / 1024).toFixed(2);
   form.total_min_victim_mb.value = c.total_min_victim_mb;
+  form.total_backoff_mins.value = c.total_backoff_mins;
+  form.total_max_per_hour.value = c.total_max_per_hour;
   form.prefer_idle.checked = c.prefer_idle;
   form.idle_cpu_percent.value = c.idle_cpu_percent;
   form.interval_secs.value = c.interval_secs;
@@ -174,8 +176,8 @@ function fillSettings(c) {
 
 function readSettings() {
   const value = (name) => (form[name].type === "checkbox" ? form[name].checked : form[name].value);
-  const names = ["warn_gb", "kill_gb", "total_gb", "total_min_victim_mb", "prefer_idle", "idle_cpu_percent",
-    "interval_secs", "kill_cooldown_secs", "notify_on_close"];
+  const names = ["warn_gb", "kill_gb", "total_gb", "total_min_victim_mb", "total_backoff_mins", "total_max_per_hour",
+    "prefer_idle", "idle_cpu_percent", "interval_secs", "kill_cooldown_secs", "notify_on_close"];
   return settingsToConfig(view.config, Object.fromEntries(names.map((n) => [n, value(n)])));
 }
 

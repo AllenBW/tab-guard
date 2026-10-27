@@ -1,5 +1,6 @@
 //! Tab Guard's state between checks: settings, spared tabs, the activity
-//! log, and the cooldown. `pass` runs one check's bookkeeping. Nothing here
+//! log, the cooldown, and the whole-browser limit's back-off. `pass` runs one
+//! check's bookkeeping. Nothing here
 //! touches Tauri, so it can be tested directly.
 
 use crate::config::Config;
@@ -32,6 +33,8 @@ pub struct Snapshot {
     pub rows: Vec<Row>,
     /// Seconds until another close is allowed, if a cooldown is running.
     pub cooldown_secs: u64,
+    /// Why the whole-browser limit is paused, and until when, if it is.
+    pub total_hold: Option<String>,
     pub checked_at: u64,
 }
 
@@ -62,6 +65,13 @@ pub struct Guard {
     /// (pid, status) pairs already written to the activity log.
     logged: HashSet<(u32, Status)>,
     last_close: Option<Instant>,
+    /// When each close for the whole-browser limit in the last hour happened.
+    total_closes: VecDeque<Instant>,
+    /// The latest close for the whole-browser limit, still to be judged:
+    /// (when, Firefox's total just before, the tab's size).
+    unjudged: Option<(Instant, u64, u64)>,
+    /// The whole-browser limit is paused until then; the text says why.
+    total_hold: Option<(Instant, String)>,
     pub snapshot: Snapshot,
 }
 
@@ -95,6 +105,9 @@ impl Guard {
             events: VecDeque::new(),
             logged: HashSet::new(),
             last_close: None,
+            total_closes: VecDeque::new(),
+            unjudged: None,
+            total_hold: None,
             snapshot: Snapshot::default(),
         }
     }
@@ -124,6 +137,16 @@ impl Guard {
         if old.mode != cfg.mode {
             self.push_event("info", format!("Mode changed to “{}”", cfg.mode.label()));
         }
+        // New whole-browser settings get a fresh start. The hourly count
+        // stays, so the cap still holds.
+        let total_changed = (old.total_mb, old.total_backoff_mins, old.total_max_per_hour)
+            != (cfg.total_mb, cfg.total_backoff_mins, cfg.total_max_per_hour);
+        if total_changed && self.total_hold.take().is_some() {
+            self.push_event("info", "The whole-browser limit is back on, with your new settings".into());
+        }
+        if total_changed {
+            self.unjudged = None;
+        }
         if let Some(dir) = self.config_dir.clone() {
             if let Err(e) = cfg.save(&dir) {
                 self.push_event("info", format!("Couldn't save settings: {e}"));
@@ -139,11 +162,72 @@ impl Guard {
         self.last_close.map(|t| cooldown.saturating_sub(now.duration_since(t))).unwrap_or_default()
     }
 
+    fn hold_total(&mut self, until: Instant, now: Instant, why: String) {
+        let at = local_time(unix_now() + until.saturating_duration_since(now).as_secs());
+        let text = format!("Whole-browser limit paused until {}: {why}", &at[11..16]);
+        self.push_event("info", text.clone());
+        self.total_hold = Some((until, text));
+    }
+
+    /// Pause the whole-browser limit when closing tabs isn't bringing Firefox
+    /// down, or when it has closed its hourly maximum. Firefox keeps some
+    /// memory no tab close can free, so a limit set below that would
+    /// otherwise close a tab every cooldown, forever.
+    fn update_total_hold(&mut self, total_mb: u64, now: Instant) {
+        let hour = Duration::from_secs(3600);
+        while self.total_closes.front().is_some_and(|t| now.duration_since(*t) >= hour) {
+            self.total_closes.pop_front();
+        }
+        if let Some((until, _)) = &self.total_hold {
+            if now < *until {
+                return;
+            }
+            self.total_hold = None;
+            self.push_event("info", "The whole-browser limit is back on".into());
+        }
+        let cfg = &self.config;
+        let over = cfg.total_mb > 0 && total_mb > cfg.total_mb;
+
+        // Judge the last close once the cooldown is up, just before the
+        // rule would pick another tab. It helped if Firefox is under the
+        // limit, or down by at least half of what the tab was using.
+        if let Some((at, before, freed)) = self.unjudged {
+            if now.duration_since(at) >= Duration::from_secs(cfg.kill_cooldown_secs) {
+                self.unjudged = None;
+                let dropped = before.saturating_sub(total_mb);
+                if over && dropped < freed / 2 && cfg.total_backoff_mins > 0 {
+                    let until = now + Duration::from_secs(cfg.total_backoff_mins * 60);
+                    let why = format!(
+                        "closing a {} tab didn't bring Firefox down ({} before, {} now)",
+                        gb(freed),
+                        gb(before),
+                        gb(total_mb)
+                    );
+                    self.hold_total(until, now, why);
+                    return;
+                }
+            }
+        }
+
+        let cap = self.config.total_max_per_hour as usize;
+        if over && cap > 0 && self.total_closes.len() >= cap {
+            let until = self.total_closes[self.total_closes.len() - cap] + hour;
+            let why = format!("it has closed {cap} tab{} in the last hour", if cap == 1 { "" } else { "s" });
+            self.hold_total(until, now, why);
+        }
+    }
+
     /// One check: judge `procs` (biggest first), log what's new, close at
     /// most one tab through `close`, and update the snapshot.
     pub fn pass(&mut self, procs: &[Proc], now: Instant, close: &mut dyn FnMut(u32)) -> Option<Closed> {
+        let total_mb: u64 = procs.iter().map(|p| p.mem_mb).sum();
+        // Only a closing mode builds up whole-browser closes to judge.
+        if self.config.enabled && self.config.mode.closes() {
+            self.update_total_hold(total_mb, now);
+        }
         let can_close = self.cooldown_left(now).is_zero();
-        let eval = engine::evaluate(&self.config, procs, &self.spared, can_close);
+        let held = self.total_hold.is_some();
+        let eval = engine::evaluate(&self.config, procs, &self.spared, can_close, held);
 
         // Forget processes that are gone.
         let alive: HashSet<u32> = procs.iter().map(|p| p.pid).collect();
@@ -172,6 +256,10 @@ impl Guard {
             let mem_mb = procs.iter().find(|p| p.pid == *pid).map(|p| p.mem_mb).unwrap_or(0);
             close(*pid);
             self.last_close = Some(now);
+            if eval.close_by_total {
+                self.total_closes.push_back(now);
+                self.unjudged = Some((now, total_mb, mem_mb));
+            }
             self.push_event("closed", format!("Closed tab process {pid} ({}): {reason}", gb(mem_mb)));
             closed = Some(Closed { pid: *pid, mem_mb });
         }
@@ -185,6 +273,7 @@ impl Guard {
             over: tabs.filter(|r| r.status == Status::Over).count(),
             rows: eval.rows,
             cooldown_secs: self.cooldown_left(now).as_secs(),
+            total_hold: self.total_hold.as_ref().map(|(_, text)| text.clone()),
             checked_at: unix_now(),
         };
         closed
@@ -366,6 +455,122 @@ mod tests {
         assert!(text.contains("Mode changed to “Close at limit”"));
         assert!(Config::load(&dir).mode == Mode::Close, "settings were saved");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Twelve 900 MB tabs: 10.5 GB, over the default 8 GB whole-browser
+    /// limit with no tab over a per-tab limit. `drop` leaves out tabs that
+    /// were closed; `extra` adds what Firefox grew back.
+    fn crowd(drop: &[u32], extra: u64) -> Vec<Proc> {
+        let mut v: Vec<Proc> = (1..=12).filter(|p| !drop.contains(p)).map(|p| tab(p, 900)).collect();
+        if extra > 0 {
+            v.push(Proc { kind: Kind::Main, ..tab(99, extra) });
+        }
+        v.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb).then(a.pid.cmp(&b.pid)));
+        v
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn backs_off_when_a_close_doesnt_lower_the_total() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        assert_eq!(run(&mut g, &crowd(&[], 0), t), [1]);
+        // Firefox grows the 900 MB straight back, elsewhere.
+        assert!(run(&mut g, &crowd(&[1], 900), t + secs(61)).is_empty());
+        let hold = g.snapshot.total_hold.clone().expect("paused");
+        assert!(hold.contains("closing a 0.9 GB tab didn't bring Firefox down"), "{hold}");
+        assert!(hold.contains("10.5 GB before, 10.5 GB now"), "{hold}");
+        assert_eq!(g.snapshot.over, 0, "nothing is marked to close while paused");
+        // Still paused 14 minutes later; back on after 15.
+        assert!(run(&mut g, &crowd(&[1], 900), t + secs(61 + 14 * 60)).is_empty());
+        assert_eq!(run(&mut g, &crowd(&[1], 900), t + secs(61 + 15 * 60)), [2]);
+        assert!(g.events().any(|e| e.text == "The whole-browser limit is back on"));
+    }
+
+    #[test]
+    fn keeps_going_when_closes_help() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        assert_eq!(run(&mut g, &crowd(&[], 0), t), [1]);
+        // Each close takes the tab's 900 MB off the total.
+        assert_eq!(run(&mut g, &crowd(&[1], 0), t + secs(61)), [2]);
+        assert!(g.snapshot.total_hold.is_none());
+    }
+
+    #[test]
+    fn caps_whole_browser_closes_per_hour() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        let mut gone = vec![];
+        for i in 0..3u64 {
+            // 2 GB of Firefox that no close frees keeps it over the limit.
+            let closed = run(&mut g, &crowd(&gone, 2048), t + secs(61 * i));
+            assert_eq!(closed.len(), 1);
+            gone.extend(closed);
+        }
+        // Each close helped, but Firefox is still over; the fourth waits.
+        assert!(run(&mut g, &crowd(&gone, 2048), t + secs(61 * 3)).is_empty());
+        let hold = g.snapshot.total_hold.clone().expect("paused");
+        assert!(hold.contains("it has closed 3 tabs in the last hour"), "{hold}");
+        // An hour after the first close, one more is allowed.
+        assert_eq!(run(&mut g, &crowd(&gone, 2048), t + secs(3600)).len(), 1);
+    }
+
+    #[test]
+    fn per_tab_limits_ignore_the_pause() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        run(&mut g, &crowd(&[], 0), t);
+        run(&mut g, &crowd(&[1], 900), t + secs(61));
+        assert!(g.snapshot.total_hold.is_some());
+        let mut procs = crowd(&[1], 900);
+        procs.insert(0, tab(50, 3000));
+        assert_eq!(run(&mut g, &procs, t + secs(122)), [50]);
+    }
+
+    #[test]
+    fn zero_turns_off_back_off_and_cap() {
+        let cfg = Config { mode: Mode::Close, total_backoff_mins: 0, total_max_per_hour: 0, ..Config::default() };
+        let mut g = Guard::new(cfg, None, None);
+        let t = Instant::now();
+        let mut closed = vec![];
+        for i in 0..5u64 {
+            // Firefox never gets any smaller.
+            closed.extend(run(&mut g, &crowd(&closed, 900 * closed.len() as u64), t + secs(61 * i)));
+        }
+        assert_eq!(closed.len(), 5);
+        assert!(g.snapshot.total_hold.is_none());
+    }
+
+    #[test]
+    fn new_whole_browser_settings_end_the_pause() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        run(&mut g, &crowd(&[], 0), t);
+        run(&mut g, &crowd(&[1], 900), t + secs(61));
+        assert!(g.snapshot.total_hold.is_some());
+        // Changing something unrelated keeps it paused.
+        g.apply_config(Config { notify_on_close: true, ..g.config.clone() });
+        run(&mut g, &crowd(&[1], 900), t + secs(62));
+        assert!(g.snapshot.total_hold.is_some());
+        g.apply_config(Config { total_mb: 12 * 1024, ..g.config.clone() });
+        run(&mut g, &crowd(&[1], 900), t + secs(63));
+        assert!(g.snapshot.total_hold.is_none());
+        assert_eq!(g.snapshot.over, 0, "10.5 GB is under the new 12 GB limit");
+    }
+
+    #[test]
+    fn watch_mode_never_pauses() {
+        let mut g = guard(Mode::Watch);
+        let t = Instant::now();
+        for i in 0..5u64 {
+            run(&mut g, &crowd(&[], 0), t + secs(61 * i));
+        }
+        assert!(g.snapshot.total_hold.is_none());
+        assert_eq!(g.snapshot.over, 1, "still shows what would be closed");
     }
 
     #[test]

@@ -22,7 +22,9 @@ Limits (all editable in **Limits & settings**):
 
 - **Per tab:** warn at 1 GB, close past 2 GB.
 - **Whole browser:** past 8 GB in total, close the biggest tab, preferring an idle one
-  (under 2% CPU), and never one under 400 MB.
+  (under 2% CPU), and never one under 400 MB. Some of Firefox's memory isn't in any tab,
+  so this limit backs off: if a close doesn't bring the total down, it pauses for 15
+  minutes, and it closes at most 3 tabs an hour. Per-tab limits keep working meanwhile.
 - **Pacing:** at most one close per check, at least 60 s apart.
 
 In the window, **Spare** protects a tab process until it exits and **Close** closes one

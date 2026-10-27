@@ -42,6 +42,11 @@ pub struct Config {
     pub total_mb: u64,
     /// Never close a tab smaller than this just to get under `total_mb`.
     pub total_min_victim_mb: u64,
+    /// When a close for `total_mb` doesn't bring Firefox's total down, stop
+    /// applying `total_mb` for this many minutes. 0 = never pause.
+    pub total_backoff_mins: u64,
+    /// Close at most this many tabs an hour for `total_mb`. 0 = no cap.
+    pub total_max_per_hour: u32,
     /// Seconds between checks while the window is closed.
     pub interval_secs: u64,
     /// Minimum seconds between two closes.
@@ -63,6 +68,8 @@ impl Default for Config {
             kill_mb: 2048,
             total_mb: 8192,
             total_min_victim_mb: 400,
+            total_backoff_mins: 15,
+            total_max_per_hour: 3,
             interval_secs: 15,
             kill_cooldown_secs: 60,
             prefer_idle: true,
@@ -97,6 +104,7 @@ impl Config {
         self.kill_mb = self.kill_mb.max(self.warn_mb);
         self.interval_secs = self.interval_secs.clamp(3, 600);
         self.idle_cpu_percent = self.idle_cpu_percent.clamp(0.0, 100.0);
+        self.total_backoff_mins = self.total_backoff_mins.min(24 * 60);
         self
     }
 }
@@ -147,6 +155,7 @@ mod tests {
         assert_eq!(c.mode, Mode::Close);
         assert_eq!(c.kill_mb, 4096);
         assert_eq!(c.warn_mb, Config::default().warn_mb);
+        assert_eq!((c.total_backoff_mins, c.total_max_per_hour), (15, 3), "settings saved before these existed");
         std::fs::remove_dir_all(d).unwrap();
     }
 
@@ -169,8 +178,10 @@ mod tests {
         assert_eq!(c.kill_mb, 100, "kill limit can't be below the warning level");
         assert_eq!(c.interval_secs, 3);
         assert_eq!(c.idle_cpu_percent, 0.0);
-        let c = Config { interval_secs: 100_000, idle_cpu_percent: 900.0, ..Config::default() }.sanitized();
+        let c = Config { interval_secs: 100_000, idle_cpu_percent: 900.0, total_backoff_mins: 1_000_000, ..Config::default() }
+            .sanitized();
         assert_eq!(c.interval_secs, 600);
+        assert_eq!(c.total_backoff_mins, 24 * 60);
         assert_eq!(c.idle_cpu_percent, 100.0);
     }
 
