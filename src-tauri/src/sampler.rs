@@ -1,9 +1,12 @@
-//! Finds Firefox's processes and measures them.
+//! Finds Firefox's processes and measures them, straight from the kernel.
+//!
+//! Each pass lists every pid, but only looks closely at Firefox's: a pid's
+//! path and arguments are read once and cached, and one `proc_pid_rusage`
+//! call per Firefox process gives its memory, CPU time and start time.
 
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -28,106 +31,335 @@ pub struct Proc {
     pub growth_mb_per_min: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Known {
+    NotFirefox,
+    /// `start` tells a reused pid apart from the process we classified.
+    Firefox { kind: Kind, start: u64 },
+}
+
 pub struct Sampler {
-    system: System,
+    /// Mach time units to nanoseconds: ns = ticks * numer / denom.
+    timebase: (u64, u64),
+    known: HashMap<u32, Known>,
+    /// pid -> (mach time, CPU ticks) at the previous sample.
+    prev_cpu: HashMap<u32, (u64, u64)>,
     /// pid -> recent (time, MB) samples, for the growth rate.
     history: HashMap<u32, VecDeque<(Instant, u64)>>,
+    pid_buf: Vec<libc::pid_t>,
 }
 
 const HISTORY_WINDOW_SECS: u64 = 300;
+const MB: u64 = 1024 * 1024;
 
 impl Sampler {
     pub fn new() -> Self {
-        Sampler { system: System::new(), history: HashMap::new() }
+        let mut tb = MachTimebase { numer: 1, denom: 1 };
+        unsafe { mach_timebase_info(&mut tb) };
+        Sampler {
+            timebase: (tb.numer.max(1) as u64, tb.denom.max(1) as u64),
+            known: HashMap::new(),
+            prev_cpu: HashMap::new(),
+            history: HashMap::new(),
+            pid_buf: Vec::new(),
+        }
     }
 
+    fn ticks_to_ns(&self, ticks: u64) -> u64 {
+        (ticks as u128 * self.timebase.0 as u128 / self.timebase.1 as u128) as u64
+    }
+
+    /// Firefox's processes, biggest first.
     pub fn sample(&mut self) -> Vec<Proc> {
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing()
-                .with_cpu()
-                .with_cmd(UpdateKind::OnlyIfNotSet)
-                .with_exe(UpdateKind::OnlyIfNotSet),
-        );
-        let now_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        list_pids(&mut self.pid_buf);
         let now = Instant::now();
+        let now_ticks = unsafe { mach_absolute_time() };
+        let alive: HashSet<u32> = self.pid_buf.iter().map(|&p| p as u32).collect();
+        // Forget pids that exited, so a reused pid gets looked at afresh.
+        self.known.retain(|pid, _| alive.contains(pid));
+        self.prev_cpu.retain(|pid, _| alive.contains(pid));
+        self.history.retain(|pid, _| alive.contains(pid));
 
         let mut procs = Vec::new();
-        for (pid, p) in self.system.processes() {
-            let Some(exe) = p.exe() else { continue };
-            let exe = exe.to_string_lossy();
-            let Some(kind) = classify(&exe, p.cmd()) else { continue };
-            let pid = pid.as_u32();
-            let mem_mb = footprint_bytes(pid).unwrap_or_else(|| p.memory()) / (1024 * 1024);
+        for i in 0..self.pid_buf.len() {
+            let pid = self.pid_buf[i] as u32;
+            if pid == 0 {
+                continue;
+            }
+            let known = match self.known.get(&pid) {
+                Some(k) => *k,
+                None => {
+                    let k = identify(pid);
+                    self.known.insert(pid, k);
+                    k
+                }
+            };
+            let Known::Firefox { kind, start } = known else { continue };
+            let Some(ri) = rusage(pid) else {
+                self.known.remove(&pid);
+                continue;
+            };
+            if ri.ri_proc_start_abstime != start && start != 0 {
+                // Same pid, different process: classify it again next pass.
+                self.known.remove(&pid);
+                continue;
+            }
 
+            let cpu_ticks = ri.ri_user_time + ri.ri_system_time;
+            let cpu = match self.prev_cpu.insert(pid, (now_ticks, cpu_ticks)) {
+                Some((t0, c0)) if now_ticks > t0 => {
+                    let wall = self.ticks_to_ns(now_ticks - t0) as f64;
+                    let used = self.ticks_to_ns(cpu_ticks.saturating_sub(c0)) as f64;
+                    (100.0 * used / wall) as f32
+                }
+                _ => 0.0,
+            };
+
+            let mem_mb = ri.ri_phys_footprint / MB;
+            let age_secs = self.ticks_to_ns(now_ticks.saturating_sub(ri.ri_proc_start_abstime)) / 1_000_000_000;
             let hist = self.history.entry(pid).or_default();
             hist.push_back((now, mem_mb));
             while hist.front().is_some_and(|(t, _)| now.duration_since(*t).as_secs() > HISTORY_WINDOW_SECS) {
                 hist.pop_front();
             }
-            let growth_mb_per_min = match (hist.front(), hist.back()) {
-                (Some((t0, m0)), Some((t1, m1))) if t1.duration_since(*t0).as_secs() >= 20 => {
-                    (*m1 as f64 - *m0 as f64) / (t1.duration_since(*t0).as_secs_f64() / 60.0)
-                }
-                _ => 0.0,
-            };
 
-            procs.push(Proc {
-                pid,
-                kind,
-                mem_mb,
-                cpu: p.cpu_usage(),
-                age_secs: now_unix.saturating_sub(p.start_time()),
-                growth_mb_per_min,
-            });
+            procs.push(Proc { pid, kind, mem_mb, cpu, age_secs, growth_mb_per_min: growth_mb_per_min(hist) });
         }
-        self.history.retain(|pid, _| self.system.process(Pid::from_u32(*pid)).is_some());
-        procs.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb));
+        procs.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb).then(a.pid.cmp(&b.pid)));
         procs
     }
 }
 
-/// Which kind of Firefox process this is, or None if it isn't Firefox.
-fn classify(exe: &str, cmd: &[std::ffi::OsString]) -> Option<Kind> {
-    if !(exe.starts_with("/Applications/Firefox") && exe.contains(".app/Contents/MacOS/")) {
-        return None;
+/// Look at a pid we haven't seen before.
+fn identify(pid: u32) -> Known {
+    let Some(path) = pid_path(pid) else { return Known::NotFirefox };
+    if !is_firefox_path(&path) {
+        return Known::NotFirefox;
     }
-    if exe.ends_with("/MacOS/firefox") {
-        return Some(Kind::Main);
+    let args = if path.contains("plugin-container") { proc_args(pid).unwrap_or_default() } else { Vec::new() };
+    let start = rusage(pid).map(|r| r.ri_proc_start_abstime).unwrap_or(0);
+    Known::Firefox { kind: classify(&path, &args), start }
+}
+
+/// True for executables inside any Firefox app bundle (release, Developer
+/// Edition, Nightly), wherever it's installed.
+pub fn is_firefox_path(path: &str) -> bool {
+    let Some(i) = path.find(".app/Contents/MacOS/") else { return false };
+    let bundle = path[..i].rsplit('/').next().unwrap_or("");
+    bundle.starts_with("Firefox")
+}
+
+/// Which kind of Firefox process this is. `path` must be a Firefox path.
+pub fn classify(path: &str, args: &[String]) -> Kind {
+    if path.ends_with("/MacOS/firefox") {
+        return Kind::Main;
     }
-    if exe.contains("gpu-helper") {
-        return Some(Kind::Gpu);
+    if path.contains("gpu-helper") {
+        return Kind::Gpu;
     }
     // Web content processes run plugin-container with -isForBrowser and end
     // their arguments with the process type "tab".
-    let is_browser = cmd.iter().any(|a| a == "-isForBrowser");
-    if exe.contains("plugin-container") && is_browser && cmd.last().is_some_and(|a| a == "tab") {
-        return Some(Kind::Tab);
+    let is_browser = args.iter().any(|a| a == "-isForBrowser");
+    if path.contains("plugin-container") && is_browser && args.last().is_some_and(|a| a == "tab") {
+        return Kind::Tab;
     }
-    Some(Kind::Other)
+    Kind::Other
 }
 
-/// Physical footprint in bytes. Unlike resident size, this doesn't count
-/// memory shared with other processes, so it can be summed.
-fn footprint_bytes(pid: u32) -> Option<u64> {
-    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
-    let rc = unsafe {
-        libc::proc_pid_rusage(
-            pid as libc::c_int,
-            libc::RUSAGE_INFO_V2,
-            info.as_mut_ptr() as *mut libc::rusage_info_t,
+/// MB per minute between the oldest and newest sample, once they're at
+/// least 20 seconds apart.
+pub fn growth_mb_per_min(hist: &VecDeque<(Instant, u64)>) -> f64 {
+    match (hist.front(), hist.back()) {
+        (Some((t0, m0)), Some((t1, m1))) => {
+            let secs = t1.duration_since(*t0).as_secs_f64();
+            if secs < 20.0 {
+                0.0
+            } else {
+                (*m1 as f64 - *m0 as f64) / (secs / 60.0)
+            }
+        }
+        _ => 0.0,
+    }
+}
+
+/// Parse a KERN_PROCARGS2 buffer: argc, the exec path, NUL padding, then
+/// argc NUL-terminated arguments (environment follows; ignored).
+pub fn parse_procargs(buf: &[u8]) -> Option<Vec<String>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if argc < 0 {
+        return None;
+    }
+    let mut rest = &buf[4..];
+    // Skip the exec path and the padding after it.
+    let end = rest.iter().position(|&b| b == 0)?;
+    rest = &rest[end..];
+    let start = rest.iter().position(|&b| b != 0)?;
+    rest = &rest[start..];
+    let mut args = Vec::with_capacity(argc as usize);
+    for part in rest.split(|&b| b == 0).take(argc as usize) {
+        args.push(String::from_utf8_lossy(part).into_owned());
+    }
+    (args.len() == argc as usize).then_some(args)
+}
+
+// ---------------------------------------------------------------- syscalls
+
+// Declared here: libc deprecates its copies in favour of the mach2 crate,
+// which isn't worth a dependency for two functions.
+#[repr(C)]
+struct MachTimebase {
+    numer: u32,
+    denom: u32,
+}
+
+extern "C" {
+    fn mach_timebase_info(info: *mut MachTimebase) -> libc::c_int;
+    fn mach_absolute_time() -> u64;
+}
+
+fn list_pids(buf: &mut Vec<libc::pid_t>) {
+    let needed = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    // Leave room for processes started between the two calls.
+    let cap = (needed.max(0) as usize) + 64;
+    buf.clear();
+    buf.resize(cap, 0);
+    let n = unsafe {
+        libc::proc_listallpids(
+            buf.as_mut_ptr() as *mut libc::c_void,
+            (cap * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
         )
     };
-    (rc == 0).then(|| unsafe { info.assume_init() }.ri_phys_footprint)
+    buf.truncate(n.max(0) as usize);
+}
+
+fn pid_path(pid: u32) -> Option<String> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+fn proc_args(pid: u32) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let rc = unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) };
+    if rc != 0 || size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    let rc = unsafe {
+        libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr() as *mut libc::c_void, &mut size, std::ptr::null_mut(), 0)
+    };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    parse_procargs(&buf)
+}
+
+/// Unlike resident size, the physical footprint doesn't count memory shared
+/// with other processes, so footprints can be summed.
+fn rusage(pid: u32) -> Option<libc::rusage_info_v2> {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    let rc = unsafe {
+        libc::proc_pid_rusage(pid as libc::c_int, libc::RUSAGE_INFO_V2, info.as_mut_ptr() as *mut libc::rusage_info_t)
+    };
+    (rc == 0).then(|| unsafe { info.assume_init() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn recognizes_firefox_bundles_anywhere() {
+        assert!(is_firefox_path("/Applications/Firefox.app/Contents/MacOS/firefox"));
+        assert!(is_firefox_path(
+            "/Applications/Firefox.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container"
+        ));
+        assert!(is_firefox_path("/Users/a/Applications/Firefox Nightly.app/Contents/MacOS/firefox"));
+        assert!(is_firefox_path("/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox"));
+        assert!(!is_firefox_path("/Applications/Safari.app/Contents/MacOS/Safari"));
+        assert!(!is_firefox_path("/Applications/Thunderbird.app/Contents/MacOS/thunderbird"));
+        assert!(!is_firefox_path("/usr/bin/firefox"));
+        // A folder named Firefox isn't enough; the bundle itself must be.
+        assert!(!is_firefox_path("/Users/a/Firefox/Other.app/Contents/MacOS/other"));
+    }
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn classifies_process_kinds() {
+        let base = "/Applications/Firefox.app/Contents/MacOS";
+        let pc = format!("{base}/plugin-container.app/Contents/MacOS/plugin-container");
+        assert_eq!(classify(&format!("{base}/firefox"), &[]), Kind::Main);
+        assert_eq!(
+            classify(&format!("{base}/gpu-helper.app/Contents/MacOS/Firefox GPU Helper"), &[]),
+            Kind::Gpu
+        );
+        assert_eq!(classify(&pc, &args(&["pc", "-isForBrowser", "-prefsHandle", "0:1", "tab"])), Kind::Tab);
+        // Utility, socket and media processes aren't tabs.
+        assert_eq!(classify(&pc, &args(&["pc", "-appDir", "x", "socket"])), Kind::Other);
+        assert_eq!(classify(&pc, &args(&["pc", "-isForBrowser", "rdd"])), Kind::Other);
+        assert_eq!(classify(&pc, &args(&["pc", "tab"])), Kind::Other);
+        assert_eq!(classify(&format!("{base}/crashhelper"), &[]), Kind::Other);
+    }
+
+    fn procargs(argc: i32, exec: &str, pad: usize, argv: &[&str], env: &[&str]) -> Vec<u8> {
+        let mut b = argc.to_ne_bytes().to_vec();
+        b.extend(exec.as_bytes());
+        b.extend(std::iter::repeat(0).take(pad));
+        for s in argv.iter().chain(env) {
+            b.extend(s.as_bytes());
+            b.push(0);
+        }
+        b
+    }
+
+    #[test]
+    fn parses_procargs() {
+        let buf = procargs(3, "/bin/pc", 5, &["/bin/pc", "-isForBrowser", "tab"], &["HOME=/x"]);
+        assert_eq!(parse_procargs(&buf), Some(args(&["/bin/pc", "-isForBrowser", "tab"])));
+        // No padding beyond the single terminator.
+        let buf = procargs(1, "/bin/a", 1, &["a"], &[]);
+        assert_eq!(parse_procargs(&buf), Some(args(&["a"])));
+        // argc says more than the buffer holds.
+        let buf = procargs(4, "/bin/a", 1, &["a", "b"], &[]);
+        assert_eq!(parse_procargs(&buf), None);
+        assert_eq!(parse_procargs(&[1, 0]), None);
+        assert_eq!(parse_procargs(&(-1i32).to_ne_bytes()), None);
+    }
+
+    #[test]
+    fn growth_needs_twenty_seconds_of_history() {
+        let t0 = Instant::now();
+        let mut h = VecDeque::from([(t0, 500)]);
+        assert_eq!(growth_mb_per_min(&h), 0.0);
+        h.push_back((t0 + Duration::from_secs(10), 600));
+        assert_eq!(growth_mb_per_min(&h), 0.0);
+        h.push_back((t0 + Duration::from_secs(120), 700));
+        assert!((growth_mb_per_min(&h) - 100.0).abs() < 1e-9);
+        // Shrinking reads as negative growth.
+        let h = VecDeque::from([(t0, 800), (t0 + Duration::from_secs(60), 500)]);
+        assert!((growth_mb_per_min(&h) + 300.0).abs() < 1e-9);
+        assert_eq!(growth_mb_per_min(&VecDeque::new()), 0.0);
+    }
+
+    #[test]
+    fn sees_its_own_process_but_not_as_firefox() {
+        let me = std::process::id();
+        let path = pid_path(me).expect("own path");
+        assert!(!is_firefox_path(&path));
+        let ri = rusage(me).expect("own rusage");
+        assert!(ri.ri_phys_footprint > 0);
+        let args = proc_args(me).expect("own args");
+        assert!(!args.is_empty());
+        let mut buf = Vec::new();
+        list_pids(&mut buf);
+        assert!(buf.contains(&(me as libc::pid_t)));
+    }
 
     /// Needs Firefox running: `cargo test live_sample -- --ignored --nocapture`
     #[test]
@@ -135,7 +367,7 @@ mod tests {
     fn live_sample() {
         let mut s = Sampler::new();
         s.sample();
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(1));
         let procs = s.sample();
         let total: u64 = procs.iter().map(|p| p.mem_mb).sum();
         let tabs = procs.iter().filter(|p| p.kind == Kind::Tab).count();
@@ -144,5 +376,20 @@ mod tests {
             println!("{:>6} {:?} {} MB cpu {:.1}% age {}s", p.pid, p.kind, p.mem_mb, p.cpu, p.age_secs);
         }
         assert!(tabs > 0, "is Firefox running?");
+    }
+
+    /// `cargo test --release bench_sample -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_sample() {
+        let mut s = Sampler::new();
+        let t = Instant::now();
+        s.sample();
+        println!("first sample: {:?}", t.elapsed());
+        let t = Instant::now();
+        for _ in 0..20 {
+            s.sample();
+        }
+        println!("steady sample: {:?} each", t.elapsed() / 20);
     }
 }

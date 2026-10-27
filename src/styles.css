@@ -97,6 +97,12 @@ button.danger { color: var(--over); }
   background: var(--accent-soft); color: var(--text);
 }
 .banner.paused { background: var(--warn-soft); }
+.toast {
+  margin-top: 10px; padding: 8px 12px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.toast.error { border-color: var(--over); color: var(--over); }
+button:disabled { opacity: 0.5; cursor: default; }
 
 .tabs { display: flex; gap: 4px; margin-top: 18px; border-bottom: 1px solid var(--border); }
 .tabs button {

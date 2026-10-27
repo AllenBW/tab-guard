@@ -3,102 +3,33 @@
 
 mod config;
 mod engine;
+mod guard;
 mod sampler;
 
 use config::{Config, Mode};
-use engine::{gb, Row, Status};
-use serde::Serialize;
-use std::collections::{HashSet, VecDeque};
-use std::io::Write as _;
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
+use engine::gb;
+use guard::{Guard, Snapshot, View};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
-const MAX_EVENTS: usize = 300;
-
-#[derive(Debug, Clone, Serialize)]
-struct Event {
-    /// Unix seconds.
-    at: u64,
-    /// "closed", "would-close", "warn", "info"
-    kind: &'static str,
-    text: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-struct Snapshot {
-    firefox_running: bool,
-    total_mb: u64,
-    tab_count: usize,
-    flagged: usize,
-    over: usize,
-    rows: Vec<Row>,
-    /// Seconds until another close is allowed, if a cooldown is running.
-    cooldown_secs: u64,
-    checked_at: u64,
-}
-
-struct Inner {
-    config: Config,
-    config_dir: PathBuf,
-    log_path: PathBuf,
-    spared: HashSet<u32>,
-    events: VecDeque<Event>,
-    /// (pid, status) pairs already written to the activity log.
-    logged: HashSet<(u32, Status)>,
-    last_close: Option<Instant>,
-    snapshot: Snapshot,
-}
-
 struct Shared {
-    inner: Mutex<Inner>,
+    guard: Mutex<Guard>,
     wake: Mutex<Sender<()>>,
     /// Tracked here so the monitor never has to ask the window (a main-thread call).
-    window_visible: AtomicBool,
+    window_open: AtomicBool,
 }
 
 impl Shared {
     fn wake(&self) {
         let _ = self.wake.lock().unwrap().send(());
     }
-}
-
-impl Inner {
-    fn push_event(&mut self, kind: &'static str, text: String) {
-        let at = unix_now();
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.log_path) {
-            let _ = writeln!(f, "{} {kind}: {text}", local_time(at));
-        }
-        self.events.push_front(Event { at, kind, text });
-        self.events.truncate(MAX_EVENTS);
-    }
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
-/// "2026-10-26 21:30:05" in the Mac's time zone, for the log file.
-fn local_time(unix: u64) -> String {
-    let t = unix as libc::time_t;
-    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min,
-        tm.tm_sec
-    )
 }
 
 /// Ask a tab process to quit, then force it if it's still there. Firefox
@@ -132,34 +63,39 @@ struct TrayItems {
     modes: Vec<(Mode, CheckMenuItem<tauri::Wry>)>,
 }
 
+/// The menu-bar title and the two status lines in its menu.
+fn tray_text(cfg: &Config, snap: &Snapshot) -> (Option<String>, String, String) {
+    if !snap.firefox_running {
+        let title = (!cfg.enabled).then(|| "Paused".to_string());
+        return (title, "Firefox isn't running".into(), format!("Mode: {}", cfg.mode.label()));
+    }
+    let summary = format!("Firefox: {} · {} tab processes", gb(snap.total_mb), snap.tab_count);
+    let detail = match (snap.over, snap.flagged) {
+        (0, 0) => "Everything's within your limits".to_string(),
+        (0, n) => format!("{n} past the warning level"),
+        (o, _) if !cfg.enabled => format!("{o} would be closed (paused)"),
+        (o, _) if !cfg.mode.closes() => format!("{o} would be closed (watch only)"),
+        (o, _) => format!("{o} over a limit, closing"),
+    };
+    let title = if cfg.enabled {
+        let mark = if snap.over > 0 { "⚠︎ " } else { "" };
+        format!("{mark}{:.1}G", snap.total_mb as f64 / 1024.0)
+    } else {
+        "Paused".to_string()
+    };
+    (Some(title), summary, detail)
+}
+
 impl TrayItems {
     fn refresh(&self, cfg: &Config, snap: &Snapshot) {
+        let (title, summary, detail) = tray_text(cfg, snap);
         let _ = self.enabled.set_checked(cfg.enabled);
         for (mode, item) in &self.modes {
             let _ = item.set_checked(*mode == cfg.mode);
         }
-        if !snap.firefox_running {
-            let _ = self.summary.set_text("Firefox isn't running");
-            let _ = self.detail.set_text(format!("Mode: {}", cfg.mode.label()));
-            let _ = self.tray.set_title(if cfg.enabled { None } else { Some("Paused") });
-            return;
-        }
-        let _ = self.summary.set_text(format!("Firefox: {} · {} tab processes", gb(snap.total_mb), snap.tab_count));
-        let detail = match (snap.over, snap.flagged) {
-            (0, 0) => "Everything's within your limits".to_string(),
-            (0, n) => format!("{n} past the warning level"),
-            (o, _) if !cfg.enabled || !cfg.mode.closes() => format!("{o} would be closed (not closing: {})",
-                if cfg.enabled { "watch only" } else { "paused" }),
-            (o, _) => format!("{o} over a limit, closing"),
-        };
+        let _ = self.summary.set_text(summary);
         let _ = self.detail.set_text(detail);
-        let mark = if snap.over > 0 { "⚠︎ " } else { "" };
-        let title = if cfg.enabled {
-            format!("{mark}{:.1}G", snap.total_mb as f64 / 1024.0)
-        } else {
-            "Paused".to_string()
-        };
-        let _ = self.tray.set_title(Some(title));
+        let _ = self.tray.set_title(title);
     }
 }
 
@@ -215,47 +151,53 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
     Ok(TrayItems { tray, summary, detail, enabled, modes })
 }
 
+/// Open the window, creating it if needed. It's destroyed again when closed,
+/// so its web view isn't holding memory while Tab Guard sits in the menu bar.
 fn show_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
-    }
     let shared = app.state::<Arc<Shared>>();
-    shared.window_visible.store(true, Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    } else {
+        let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            .title("Tab Guard")
+            .inner_size(980.0, 680.0)
+            .min_inner_size(720.0, 480.0)
+            .focused(true)
+            .build();
+        match built {
+            Ok(w) => {
+                let shared2 = shared.inner().clone();
+                w.on_window_event(move |e| {
+                    if let WindowEvent::Destroyed = e {
+                        shared2.window_open.store(false, Ordering::Relaxed);
+                    }
+                });
+            }
+            Err(e) => {
+                shared.guard.lock().unwrap().push_event("info", format!("Couldn't open the window: {e}"));
+                return;
+            }
+        }
+    }
+    shared.window_open.store(true, Ordering::Relaxed);
     shared.wake();
 }
 
 fn update_config(app: &AppHandle, shared: &Shared, change: impl FnOnce(&mut Config)) {
     let (cfg, snap) = {
-        let mut inner = shared.inner.lock().unwrap();
-        let mut cfg = inner.config.clone();
+        let mut g = shared.guard.lock().unwrap();
+        let mut cfg = g.config.clone();
         change(&mut cfg);
-        apply_config(&mut inner, cfg);
-        (inner.config.clone(), inner.snapshot.clone())
+        g.apply_config(cfg);
+        (g.config.clone(), g.snapshot.clone())
     };
     // Outside the lock: see the note in `monitor`.
     if let Some(items) = app.try_state::<TrayItems>() {
         items.refresh(&cfg, &snap);
     }
     shared.wake();
-}
-
-fn apply_config(inner: &mut Inner, cfg: Config) {
-    let cfg = cfg.sanitized();
-    let old = inner.config.clone();
-    if old.enabled != cfg.enabled {
-        inner.push_event("info", if cfg.enabled { "Tab Guard turned on".into() } else { "Tab Guard paused".into() });
-    }
-    if old.mode != cfg.mode {
-        inner.push_event("info", format!("Mode changed to “{}”", cfg.mode.label()));
-    }
-    if let Err(e) = cfg.save(&inner.config_dir) {
-        inner.push_event("info", format!("Couldn't save settings: {e}"));
-    }
-    inner.config = cfg;
-    // Re-log flags under the new rules.
-    inner.logged.clear();
 }
 
 // ---------------------------------------------------------------- monitor loop
@@ -266,72 +208,32 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     // which tabs are idle.
     sampler.sample();
     std::thread::sleep(Duration::from_secs(1));
+    let mut last_tray: Option<(Option<String>, String, String)> = None;
     loop {
         let procs = sampler.sample();
-        let (cfg, snap) = {
-            let mut inner = shared.inner.lock().unwrap();
-            let cfg = inner.config.clone();
-            let cooldown = Duration::from_secs(cfg.kill_cooldown_secs);
-            let cooldown_left = inner.last_close.map(|t| cooldown.saturating_sub(t.elapsed())).unwrap_or_default();
-            let eval = engine::evaluate(&cfg, &procs, &inner.spared, cooldown_left.is_zero());
-
-            // Forget processes that are gone.
-            let alive: HashSet<u32> = procs.iter().map(|p| p.pid).collect();
-            inner.spared.retain(|p| alive.contains(p));
-            inner.logged.retain(|(p, _)| alive.contains(p));
-
-            for row in &eval.rows {
-                if !matches!(row.status, Status::Warn | Status::Over) || inner.logged.contains(&(row.proc.pid, row.status)) {
-                    continue;
-                }
-                if eval.close.as_ref().is_some_and(|(pid, _)| *pid == row.proc.pid) {
-                    continue; // logged as "closed" below
-                }
-                inner.logged.insert((row.proc.pid, row.status));
-                let reason = row.reason.clone().unwrap_or_default();
-                let (kind, verb) = match (row.status, row.action.as_deref()) {
-                    (Status::Over, Some("Would close")) => ("would-close", "Would close"),
-                    (Status::Over, _) => ("warn", "Queued to close"),
-                    _ => ("warn", "Flagged"),
-                };
-                inner.push_event(kind, format!("{verb} tab process {} ({}): {reason}", row.proc.pid, gb(row.proc.mem_mb)));
-            }
-
-            if let Some((pid, reason)) = &eval.close {
-                let mb = procs.iter().find(|p| p.pid == *pid).map(|p| p.mem_mb).unwrap_or(0);
-                close_process(*pid);
-                inner.last_close = Some(Instant::now());
-                inner.push_event("closed", format!("Closed tab process {pid} ({}): {reason}", gb(mb)));
-                if cfg.notify_on_close {
-                    notify(&format!("Closed a Firefox tab using {}. Click Restore on the crashed tab to reload it.", gb(mb)));
-                }
-            }
-
-            let tabs = eval.rows.iter().filter(|r| r.proc.kind == sampler::Kind::Tab);
-            inner.snapshot = Snapshot {
-                firefox_running: !procs.is_empty(),
-                total_mb: eval.total_mb,
-                tab_count: tabs.clone().count(),
-                flagged: tabs.clone().filter(|r| r.status == Status::Warn).count(),
-                over: tabs.filter(|r| r.status == Status::Over).count(),
-                rows: eval.rows,
-                cooldown_secs: inner
-                    .last_close
-                    .map(|t| cooldown.saturating_sub(t.elapsed()).as_secs())
-                    .unwrap_or(0),
-                checked_at: unix_now(),
-            };
-            (inner.config.clone(), inner.snapshot.clone())
+        let (cfg, snap, closed) = {
+            let mut g = shared.guard.lock().unwrap();
+            let closed = g.pass(&procs, Instant::now(), &mut close_process);
+            (g.config.clone(), g.snapshot.clone(), closed)
         };
-
-        // Tray and window calls block until the main thread runs them, and the
-        // main thread takes `inner` to answer the window's commands. Making
-        // them while holding `inner` deadlocks the app, so they come after.
-        if let Some(items) = app.try_state::<TrayItems>() {
-            items.refresh(&cfg, &snap);
+        if let (Some(c), true) = (&closed, cfg.notify_on_close) {
+            notify(&format!("Closed a Firefox tab using {}. Click Restore on the crashed tab to reload it.", gb(c.mem_mb)));
         }
-        let visible = shared.window_visible.load(Ordering::Relaxed);
-        let interval = Duration::from_secs(if visible { 3 } else { cfg.interval_secs });
+
+        // Tray calls block until the main thread runs them, and the main
+        // thread takes `guard` to answer the window's commands. Making them
+        // while holding `guard` deadlocks the app, so they come after. Skip
+        // them entirely when nothing visible changed.
+        let text = tray_text(&cfg, &snap);
+        if last_tray.as_ref() != Some(&text) {
+            if let Some(items) = app.try_state::<TrayItems>() {
+                items.refresh(&cfg, &snap);
+            }
+            last_tray = Some(text);
+        }
+
+        let open = shared.window_open.load(Ordering::Relaxed);
+        let interval = Duration::from_secs(if open { 3 } else { cfg.interval_secs });
         // Sleep until the next check, or until something wakes us early.
         let _ = wake.recv_timeout(interval);
         while wake.try_recv().is_ok() {}
@@ -340,25 +242,9 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
 
 // ---------------------------------------------------------------- commands
 
-#[derive(Serialize)]
-struct View {
-    config: Config,
-    snapshot: Snapshot,
-    events: Vec<Event>,
-    spared: Vec<u32>,
-    log_path: String,
-}
-
 #[tauri::command]
 fn get_view(shared: State<'_, Arc<Shared>>) -> View {
-    let inner = shared.inner.lock().unwrap();
-    View {
-        config: inner.config.clone(),
-        snapshot: inner.snapshot.clone(),
-        events: inner.events.iter().cloned().collect(),
-        spared: inner.spared.iter().copied().collect(),
-        log_path: inner.log_path.to_string_lossy().into_owned(),
-    }
+    shared.guard.lock().unwrap().view()
 }
 
 #[tauri::command]
@@ -368,34 +254,14 @@ fn save_config(app: AppHandle, shared: State<'_, Arc<Shared>>, config: Config) {
 
 #[tauri::command]
 fn close_tab(shared: State<'_, Arc<Shared>>, pid: u32) -> Result<(), String> {
-    {
-        let mut inner = shared.inner.lock().unwrap();
-        let row = inner
-            .snapshot
-            .rows
-            .iter()
-            .find(|r| r.proc.pid == pid && r.proc.kind == sampler::Kind::Tab)
-            .cloned()
-            .ok_or("That tab process is gone, or isn't a Firefox tab")?;
-        close_process(pid);
-        inner.push_event("closed", format!("You closed tab process {pid} ({})", gb(row.proc.mem_mb)));
-    }
+    shared.guard.lock().unwrap().close_by_user(pid, &mut close_process)?;
     shared.wake();
     Ok(())
 }
 
 #[tauri::command]
 fn set_spared(shared: State<'_, Arc<Shared>>, pid: u32, spared: bool) {
-    {
-        let mut inner = shared.inner.lock().unwrap();
-        if spared {
-            inner.spared.insert(pid);
-            inner.push_event("info", format!("Sparing tab process {pid} until it exits"));
-        } else {
-            inner.spared.remove(&pid);
-            inner.push_event("info", format!("Stopped sparing tab process {pid}"));
-        }
-    }
+    shared.guard.lock().unwrap().set_spared(pid, spared);
     shared.wake();
 }
 
@@ -416,21 +282,70 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
     Ok(m.is_enabled().unwrap_or(false))
 }
 
-/// Firefox's own page that names the site in each process.
+/// Run a command, giving up after `limit`.
+fn run_with_timeout(cmd: &mut std::process::Command, limit: Duration) -> bool {
+    let Ok(mut child) = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() else {
+        return false;
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() < limit => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// Firefox's own page that names the site in each process. `open` can't do
+/// this (it doesn't know the about: scheme), so ask Firefox directly over
+/// Apple Events, and put the address on the clipboard as a fallback. Async so
+/// the wait runs off the main thread.
 #[tauri::command]
-fn open_about_processes() -> Result<(), String> {
-    std::process::Command::new("open")
-        .args(["-a", "Firefox", "about:processes"])
-        .status()
-        .map_err(|e| e.to_string())
-        .and_then(|s| if s.success() { Ok(()) } else { Err("Firefox wouldn't open it".into()) })
+async fn open_about_processes() -> Result<String, String> {
+    let mut pbcopy = std::process::Command::new("pbcopy");
+    pbcopy.stdin(std::process::Stdio::piped());
+    if let Ok(mut child) = pbcopy.spawn() {
+        use std::io::Write as _;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"about:processes");
+        }
+        let _ = child.wait();
+    }
+    let asked = run_with_timeout(
+        std::process::Command::new("osascript").args([
+            "-e",
+            "with timeout of 5 seconds",
+            "-e",
+            "tell application \"Firefox\"",
+            "-e",
+            "activate",
+            "-e",
+            "open location \"about:processes\"",
+            "-e",
+            "end tell",
+            "-e",
+            "end timeout",
+        ]),
+        Duration::from_secs(7),
+    );
+    if asked {
+        Ok("Asked Firefox to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.".into())
+    } else {
+        let _ = run_with_timeout(std::process::Command::new("open").args(["-a", "Firefox"]), Duration::from_secs(5));
+        Ok("Firefox didn't accept the request. The address is on your clipboard: in Firefox press ⌘L, then ⌘V and Return.".into())
+    }
 }
 
 // ---------------------------------------------------------------- app
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .invoke_handler(tauri::generate_handler![
             get_view,
@@ -457,47 +372,77 @@ pub fn run() {
             let log_dir = app.path().home_dir()?.join("Library/Logs");
             let _ = std::fs::create_dir_all(&log_dir);
 
+            let mut guard = Guard::new(config.clone(), Some(config_dir), Some(log_dir.join("Tab Guard.log")));
+            guard.push_event("info", format!("Started in “{}” mode", config.mode.label()));
             let (tx, rx) = mpsc::channel();
-            let shared = Arc::new(Shared {
-                inner: Mutex::new(Inner {
-                    config: config.clone(),
-                    config_dir,
-                    log_path: log_dir.join("Tab Guard.log"),
-                    spared: HashSet::new(),
-                    events: VecDeque::new(),
-                    logged: HashSet::new(),
-                    last_close: None,
-                    snapshot: Snapshot::default(),
-                }),
-                wake: Mutex::new(tx),
-                window_visible: AtomicBool::new(false),
-            });
-            shared.inner.lock().unwrap().push_event("info", format!("Started in “{}” mode", config.mode.label()));
+            let shared =
+                Arc::new(Shared { guard: Mutex::new(guard), wake: Mutex::new(tx), window_open: AtomicBool::new(false) });
             app.manage(shared.clone());
+            app.manage(build_tray(app.handle(), &config)?);
 
-            let items = build_tray(app.handle(), &config)?;
-            app.manage(items);
-
-            // Closing the window hides it; Tab Guard keeps running in the menu bar.
-            if let Some(w) = app.get_webview_window("main") {
-                let w2 = w.clone();
-                let shared2 = shared.clone();
-                w.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
-                        api.prevent_close();
-                        let _ = w2.hide();
-                        shared2.window_visible.store(false, Ordering::Relaxed);
-                    }
-                });
-            }
             if first_run {
                 show_window(app.handle());
             }
-
             let handle = app.handle().clone();
             std::thread::spawn(move || monitor(handle, shared, rx));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Tab Guard");
+        .build(tauri::generate_context!())
+        .expect("error while building Tab Guard");
+
+    app.run(|_app, event| {
+        // Closing the last window would normally quit; Tab Guard lives in the
+        // menu bar, so only an explicit Quit (which passes an exit code) does.
+        if let RunEvent::ExitRequested { api, code: None, .. } = event {
+            api.prevent_exit();
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Row;
+
+    fn snap(total_mb: u64, over: usize, flagged: usize) -> Snapshot {
+        Snapshot { firefox_running: true, total_mb, tab_count: 20, over, flagged, rows: Vec::<Row>::new(), ..Default::default() }
+    }
+
+    #[test]
+    fn tray_title_shows_total_and_warning() {
+        let cfg = Config::default();
+        assert_eq!(tray_text(&cfg, &snap(9216, 0, 0)).0.as_deref(), Some("9.0G"));
+        assert_eq!(tray_text(&cfg, &snap(9216, 1, 0)).0.as_deref(), Some("⚠︎ 9.0G"));
+        let paused = Config { enabled: false, ..Config::default() };
+        assert_eq!(tray_text(&paused, &snap(9216, 1, 0)).0.as_deref(), Some("Paused"));
+    }
+
+    #[test]
+    fn tray_detail_says_whether_it_will_close() {
+        let watch = Config::default();
+        assert_eq!(tray_text(&watch, &snap(1, 2, 0)).2, "2 would be closed (watch only)");
+        let close = Config { mode: Mode::Close, ..Config::default() };
+        assert_eq!(tray_text(&close, &snap(1, 2, 0)).2, "2 over a limit, closing");
+        let paused = Config { enabled: false, ..close.clone() };
+        assert_eq!(tray_text(&paused, &snap(1, 2, 0)).2, "2 would be closed (paused)");
+        assert_eq!(tray_text(&close, &snap(1, 0, 3)).2, "3 past the warning level");
+        assert_eq!(tray_text(&close, &snap(1, 0, 0)).2, "Everything's within your limits");
+    }
+
+    #[test]
+    fn tray_without_firefox() {
+        let none = Snapshot::default();
+        let (title, summary, _) = tray_text(&Config::default(), &none);
+        assert_eq!(title, None);
+        assert_eq!(summary, "Firefox isn't running");
+    }
+
+    #[test]
+    fn timeout_kills_slow_commands() {
+        let t = Instant::now();
+        assert!(!run_with_timeout(std::process::Command::new("sleep").arg("5"), Duration::from_millis(200)));
+        assert!(t.elapsed() < Duration::from_secs(2));
+        assert!(run_with_timeout(&mut std::process::Command::new("true"), Duration::from_secs(2)));
+        assert!(!run_with_timeout(&mut std::process::Command::new("false"), Duration::from_secs(2)));
+    }
 }

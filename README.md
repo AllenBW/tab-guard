@@ -27,7 +27,8 @@ Limits (all editable in **Limits & settings**):
 
 In the window, **Spare** protects a tab process until it exits and **Close** closes one
 now. Firefox doesn't tell other apps which website runs in which process; the
-**Open about:processes** button shows that inside Firefox.
+**Open about:processes** button asks Firefox to open that page (macOS asks once whether Tab
+Guard may control Firefox) and also puts the address on the clipboard as a fallback.
 
 Settings: `~/Library/Application Support/local.tabguard/config.json`
 Activity log: `~/Library/Logs/Tab Guard.log`
@@ -50,8 +51,9 @@ and `~/Library/LaunchAgents/Tab Guard.plist`.
 
 ## Development
 
-- `cd src-tauri && cargo test` runs the rule tests; `cargo test live_sample -- --ignored --nocapture`
-  samples the Firefox that's running now.
+- `pnpm test` runs the UI helper tests (node) and the Rust tests.
+- `cd src-tauri && cargo test live_sample -- --ignored --nocapture` samples the Firefox that's running
+  now; `cargo test --release bench_sample -- --ignored --nocapture` times a check.
 - `node scripts/preview-server.mjs` serves the window's UI at http://localhost:5174 with a
   fake backend, for layout work without rebuilding.
 - `pnpm icons` redraws the icons from `scripts/make-icons.mjs`.

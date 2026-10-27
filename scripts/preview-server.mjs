@@ -37,6 +37,11 @@ const mock = `
     save_config: (a) => { config = a.config; },
     get_autostart: () => autostart,
     set_autostart: (a) => (autostart = a.enabled),
+    close_tab: () => {},
+    set_spared: () => {},
+    check_now: () => {},
+    open_about_processes: () =>
+      "Asked Firefox to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.",
   };
   window.__TAURI__ = { core: { invoke: async (cmd, args) => { console.log("invoke", cmd, args); return handlers[cmd]?.(args); } } };
 })();`;

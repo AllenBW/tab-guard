@@ -1,8 +1,8 @@
+import { gb, mbOrGb, duration, growth, summaryParts, bannerText, settingsToConfig, esc } from "./format.js";
+
 const { invoke } = window.__TAURI__.core;
 
 const $ = (sel) => document.querySelector(sel);
-const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
-const mbOrGb = (mb) => (mb >= 1024 ? gb(mb) : `${mb} MB`);
 
 const MODE_HELP = {
   watch: "Nothing is ever closed. Tabs over a limit are marked “Would close” so you can see what would happen.",
@@ -12,14 +12,20 @@ const MODE_HELP = {
 const KIND_LABEL = { main: "Firefox", tab: "Tab", gpu: "Graphics", other: "Helper" };
 
 let view = null;
+let lastJson = "";
 let settingsDirty = false;
 let confirmPid = null;
 
-function duration(secs) {
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
-  const h = Math.floor(secs / 3600);
-  return h < 48 ? `${h}h ${Math.floor((secs % 3600) / 60)}m` : `${Math.floor(h / 24)}d`;
+let toastTimer;
+/** A short message under the header. The app's web view doesn't show
+ *  window.alert, so errors went unseen before. */
+function toast(text, isError = false) {
+  const el = $("#toast");
+  el.textContent = text;
+  el.className = isError ? "toast error" : "toast";
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (el.hidden = true), 9000);
 }
 
 function timeOf(unix) {
@@ -28,7 +34,12 @@ function timeOf(unix) {
 
 async function refresh() {
   try {
-    view = await invoke("get_view");
+    const next = await invoke("get_view");
+    // Skip the redraw when nothing changed since the last poll.
+    const json = JSON.stringify(next);
+    if (json === lastJson) return;
+    lastJson = json;
+    view = next;
     render();
   } catch (e) {
     $("#headline").textContent = "Couldn't reach Tab Guard";
@@ -47,12 +58,7 @@ function render() {
     $("#subline").textContent = "Tab Guard will start watching as soon as it opens.";
   } else {
     $("#headline").textContent = `Firefox is using ${gb(s.total_mb)} across ${s.tab_count} tab processes`;
-    const parts = [];
-    if (s.over) parts.push(`${s.over} over a limit`);
-    if (s.flagged) parts.push(`${s.flagged} past the warning level`);
-    if (!parts.length) parts.push("Everything's within your limits");
-    if (s.cooldown_secs) parts.push(`next close allowed in ${s.cooldown_secs}s`);
-    $("#subline").textContent = parts.join(" · ");
+    $("#subline").textContent = summaryParts(s);
   }
 
   $("#enabled").checked = config.enabled;
@@ -63,17 +69,10 @@ function render() {
   $("#mode-help").textContent = MODE_HELP[config.mode];
 
   const banner = $("#banner");
-  if (!config.enabled) {
-    banner.hidden = false;
-    banner.className = "banner paused";
-    banner.textContent = "Tab Guard is paused. It's still measuring, but won't flag or close anything until you turn it back on.";
-  } else if (config.mode === "watch" && s.over) {
-    banner.hidden = false;
-    banner.className = "banner";
-    banner.textContent = `Watch only: ${s.over} tab process${s.over > 1 ? "es" : ""} would be closed right now. Switch modes to let Tab Guard act.`;
-  } else {
-    banner.hidden = true;
-  }
+  const text = bannerText(config, s);
+  banner.hidden = !text;
+  banner.className = config.enabled ? "banner" : "banner paused";
+  banner.textContent = text ?? "";
 
   $("#checked").textContent = s.checked_at ? `Checked ${timeOf(s.checked_at)}` : "";
   renderRows(config, s);
@@ -94,17 +93,16 @@ function renderRows(config, s) {
       const tr = document.createElement("tr");
       tr.className = r.status;
       const pill = { warn: "Warning", over: r.action || "Over limit", spared: "Spared" }[r.status];
-      const growth = Math.round(r.growth_mb_per_min);
       const isTab = r.kind === "tab";
       tr.innerHTML = `
         <td><span class="pid">${r.pid}</span><span class="kind">${KIND_LABEL[r.kind]}</span></td>
         <td><div class="mem"><div class="bar"><div class="fill" style="width:${(100 * r.mem_mb) / scale}%"></div></div>
             <span class="val">${mbOrGb(r.mem_mb)}</span></div></td>
-        <td class="num ${growth > 5 ? "grow-up" : ""}">${growth > 0 ? "+" : ""}${growth ? `${growth} MB/min` : "—"}</td>
+        <td class="num ${r.growth_mb_per_min > 5 ? "grow-up" : ""}">${growth(r.growth_mb_per_min)}</td>
         <td class="num">${r.cpu.toFixed(1)}%</td>
         <td class="num">${duration(r.age_secs)}</td>
-        <td><div class="status">${pill ? `<span class="pill">${pill}</span>` : ""}
-            ${r.reason ? `<span class="reason">${r.reason}</span>` : ""}</div></td>
+        <td><div class="status">${pill ? `<span class="pill">${esc(pill)}</span>` : ""}
+            ${r.reason ? `<span class="reason">${esc(r.reason)}</span>` : ""}</div></td>
         <td class="actions"></td>`;
       if (isTab) {
         const actions = tr.querySelector(".actions");
@@ -124,7 +122,10 @@ function renderRows(config, s) {
             return;
           }
           confirmPid = null;
-          invoke("close_tab", { pid: r.pid }).catch((e) => alert(e)).finally(refresh);
+          invoke("close_tab", { pid: r.pid })
+            .then(() => toast(`Closed tab process ${r.pid}. Click Restore on its crashed tab in Firefox to reload it.`))
+            .catch((e) => toast(String(e), true))
+            .finally(refresh);
         };
         actions.append(spare, close);
       }
@@ -172,24 +173,19 @@ function fillSettings(c) {
 }
 
 function readSettings() {
-  const num = (el, fallback) => (Number.isFinite(+el.value) && el.value !== "" ? +el.value : fallback);
-  const c = view.config;
-  return {
-    ...c,
-    warn_mb: Math.round(num(form.warn_gb, c.warn_mb / 1024) * 1024),
-    kill_mb: Math.round(num(form.kill_gb, c.kill_mb / 1024) * 1024),
-    total_mb: Math.round(num(form.total_gb, c.total_mb / 1024) * 1024),
-    total_min_victim_mb: Math.round(num(form.total_min_victim_mb, c.total_min_victim_mb)),
-    prefer_idle: form.prefer_idle.checked,
-    idle_cpu_percent: num(form.idle_cpu_percent, c.idle_cpu_percent),
-    interval_secs: Math.round(num(form.interval_secs, c.interval_secs)),
-    kill_cooldown_secs: Math.round(num(form.kill_cooldown_secs, c.kill_cooldown_secs)),
-    notify_on_close: form.notify_on_close.checked,
-  };
+  const value = (name) => (form[name].type === "checkbox" ? form[name].checked : form[name].value);
+  const names = ["warn_gb", "kill_gb", "total_gb", "total_min_victim_mb", "prefer_idle", "idle_cpu_percent",
+    "interval_secs", "kill_cooldown_secs", "notify_on_close"];
+  return settingsToConfig(view.config, Object.fromEntries(names.map((n) => [n, value(n)])));
 }
 
 async function saveConfig(config) {
-  await invoke("save_config", { config });
+  try {
+    await invoke("save_config", { config });
+  } catch (e) {
+    toast(`Couldn't save: ${e}`, true);
+    return;
+  }
   settingsDirty = false;
   await refresh();
   $("#saved").textContent = `Saved ${timeOf(Date.now() / 1000)}`;
@@ -205,7 +201,7 @@ form.addEventListener("input", (e) => {
 
 $("#autostart").addEventListener("change", async (e) => {
   e.target.checked = await invoke("set_autostart", { enabled: e.target.checked }).catch((err) => {
-    alert(err);
+    toast(`Couldn't change login startup: ${err}`, true);
     return !e.target.checked;
   });
 });
@@ -228,7 +224,16 @@ for (const t of document.querySelectorAll(".tabs button")) {
 }
 
 $("#check-now").addEventListener("click", () => invoke("check_now").then(() => setTimeout(refresh, 600)));
-$("#about-processes").addEventListener("click", () => invoke("open_about_processes").catch((e) => alert(e)));
+$("#about-processes").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  try {
+    toast(await invoke("open_about_processes"));
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    e.target.disabled = false;
+  }
+});
 
 invoke("get_autostart").then((on) => ($("#autostart").checked = on));
 refresh();
