@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Lets the Tab Guard window call its own commands",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

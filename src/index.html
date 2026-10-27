@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tab Guard</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="main.js" defer></script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="headline">
+        <h1 id="headline">Checking Firefox…</h1>
+        <p id="subline" class="muted"></p>
+      </div>
+      <label class="switch" title="Turn Tab Guard on or off">
+        <input type="checkbox" id="enabled" />
+        <span class="track"><span class="thumb"></span></span>
+        <span id="enabled-label">On</span>
+      </label>
+    </header>
+
+    <section class="mode">
+      <div class="segmented" role="radiogroup" aria-label="Mode">
+        <button role="radio" data-mode="watch">Watch only</button>
+        <button role="radio" data-mode="warn-then-close">Warn, then close</button>
+        <button role="radio" data-mode="close">Close at limit</button>
+      </div>
+      <p id="mode-help" class="muted"></p>
+    </section>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-panel="processes" aria-selected="true">Processes</button>
+      <button role="tab" data-panel="settings">Limits &amp; settings</button>
+      <button role="tab" data-panel="activity">Activity <span id="activity-count" class="count"></span></button>
+    </nav>
+
+    <main>
+      <section id="processes" class="panel">
+        <div class="panel-bar">
+          <span id="checked" class="muted"></span>
+          <span class="spacer"></span>
+          <button id="about-processes" class="link">Which site is which? Open about:processes</button>
+          <button id="check-now">Check now</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Process</th>
+              <th class="mem-col">Memory</th>
+              <th class="num">Growth</th>
+              <th class="num">CPU</th>
+              <th class="num">Running</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p class="muted small">
+          Memory is each process's own footprint (what Activity Monitor shows). Firefox doesn't tell
+          other apps which website runs in which process; its about:processes page does.
+        </p>
+      </section>
+
+      <section id="settings" class="panel" hidden>
+        <form id="settings-form" class="settings">
+          <fieldset>
+            <legend>Per-tab limits</legend>
+            <label>Warn when one tab passes
+              <span class="field"><input type="number" name="warn_gb" step="0.1" min="0.1" /> GB</span></label>
+            <label>Close a tab past
+              <span class="field"><input type="number" name="kill_gb" step="0.1" min="0.1" /> GB</span></label>
+          </fieldset>
+          <fieldset>
+            <legend>Whole-browser limit</legend>
+            <label>When all of Firefox passes
+              <span class="field"><input type="number" name="total_gb" step="0.5" min="0" /> GB</span>
+              <small>Closes the biggest tab. 0 turns this off.</small></label>
+            <label>But never close a tab smaller than
+              <span class="field"><input type="number" name="total_min_victim_mb" step="50" min="0" /> MB</span></label>
+            <label class="check"><input type="checkbox" name="prefer_idle" /> Prefer idle tabs (ones you're probably not using)</label>
+            <label>A tab counts as idle under
+              <span class="field"><input type="number" name="idle_cpu_percent" step="0.5" min="0" /> % CPU</span></label>
+          </fieldset>
+          <fieldset>
+            <legend>Timing</legend>
+            <label>Check every
+              <span class="field"><input type="number" name="interval_secs" step="1" min="3" /> seconds</span>
+              <small>Every 3 seconds while this window is open.</small></label>
+            <label>Wait at least
+              <span class="field"><input type="number" name="kill_cooldown_secs" step="5" min="0" /> seconds between closes</span></label>
+          </fieldset>
+          <fieldset>
+            <legend>General</legend>
+            <label class="check"><input type="checkbox" name="notify_on_close" /> Show a notification when a tab is closed</label>
+            <label class="check"><input type="checkbox" id="autostart" /> Start Tab Guard when I log in</label>
+          </fieldset>
+          <p id="saved" class="muted small" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section id="activity" class="panel" hidden>
+        <ul id="events" class="events"></ul>
+        <p class="muted small">Also written to <code id="log-path"></code></p>
+      </section>
+    </main>
+  </body>
+</html>
