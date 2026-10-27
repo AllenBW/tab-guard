@@ -114,12 +114,11 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
         modes.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     let mode_menu = Submenu::with_items(app, "Mode", true, &mode_refs)?;
     let open = MenuItem::with_id(app, "open", "Open Tab Guard…", true, None::<&str>)?;
-    let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Tab Guard", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
         app,
-        &[&summary, &detail, &sep()?, &enabled, &mode_menu, &sep()?, &open, &check, &sep()?, &quit],
+        &[&summary, &detail, &sep()?, &enabled, &mode_menu, &sep()?, &open, &sep()?, &quit],
     )?;
 
     let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -134,7 +133,6 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
             let id = event.id.as_ref();
             match id {
                 "open" => show_window(app),
-                "check" => shared.wake(),
                 "quit" => app.exit(0),
                 "enabled" => update_config(app, &shared, |c| c.enabled = !c.enabled),
                 _ => {
@@ -266,11 +264,6 @@ fn set_spared(shared: State<'_, Arc<Shared>>, pid: u32, spared: bool) {
 }
 
 #[tauri::command]
-fn check_now(shared: State<'_, Arc<Shared>>) {
-    shared.wake();
-}
-
-#[tauri::command]
 fn get_autostart(app: AppHandle) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
 }
@@ -352,7 +345,6 @@ pub fn run() {
             save_config,
             close_tab,
             set_spared,
-            check_now,
             get_autostart,
             set_autostart,
             open_about_processes
