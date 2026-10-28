@@ -37,8 +37,9 @@ left alone.
 
 - **Closing a tab is abrupt.** There's no warning in the browser: the tab just shows as crashed.
   Anything not saved in it is gone: a half-filled form, a draft in a web app, a video call, your
-  place in a video. **Don't let Tab Guard close tabs while you're doing critical work.** Keep it in
-  **Watch only**, or pause it from the menu bar, during calls, presentations, exams or long forms.
+  place in a video. **Don't let Tab Guard close tabs while you're doing critical work.** Pause it
+  from the menu bar (**Pause › For 1 hour** turns itself back on afterwards), or keep it in
+  **Watch only**, during calls, presentations, exams or long forms.
 - **One process can hold several tabs.** Browsers sometimes put tabs from the same site in one
   process, so closing it crashes all of them. In Chrome-family browsers a page's embedded frames
   can run in their own process; closing one breaks that part of the page.
@@ -62,10 +63,13 @@ its color says what Tab Guard is doing:
 | Green | Guarding: a closing mode is on and everything's within your limits. |
 | Orange | Worth a look: tabs past the warning level, a tab Watch only would close, or the whole-browser limit paused. |
 | Red | Closing a tab that's over a limit. |
-| Gray | Tab Guard is turned off. |
+| Struck through | Paused. "Paused 0:42" counts down a timed pause. |
 
-Its menu repeats the state with a colored dot, turns Tab Guard on or off, switches modes, and opens
-the window.
+Its menu says what's happening (with a matching colored dot) and has two actions:
+
+- **Pause ›** for 1 hour, until tomorrow (6 in the morning), or until you turn it back on. A timed
+  pause turns itself back on, so you can't forget. While paused, this becomes **Resume Tab Guard**.
+- **Open Tab Guard…** for everything else: modes, limits, the process list, the activity log and About.
 
 | Mode | What happens |
 |---|---|

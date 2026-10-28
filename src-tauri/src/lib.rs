@@ -8,15 +8,15 @@ mod guard;
 mod sampler;
 mod usage;
 
-use config::{Config, Mode};
+use config::Config;
 use engine::gb;
-use guard::{local_time, unix_now, Guard, Snapshot, View};
+use guard::{local_time, pause_end_text, tomorrow_morning, unix_now, Guard, Snapshot, View};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -61,7 +61,7 @@ fn notify(text: &str) {
 /// What the menu-bar shield's color says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayState {
-    /// Tab Guard is turned off: gray.
+    /// Tab Guard is paused: the shield is struck through.
     Off,
     /// Watch only, nothing to look at: the plain menu-bar icon.
     Watching,
@@ -78,8 +78,7 @@ impl TrayState {
     /// The shield's color, or None for the plain icon that follows the menu bar's.
     fn color(self) -> Option<[u8; 3]> {
         match self {
-            TrayState::Off => Some([142, 142, 147]),
-            TrayState::Watching => None,
+            TrayState::Off | TrayState::Watching => None,
             TrayState::Guarding => Some([48, 209, 88]),
             TrayState::Attention => Some([255, 159, 10]),
             TrayState::Closing => Some([255, 69, 58]),
@@ -113,10 +112,33 @@ fn tray_state(cfg: &Config, snap: &Snapshot) -> TrayState {
     }
 }
 
+/// The menu-bar icon with a slash through it, for paused. The slash has a
+/// clear gap on each side so it reads at menu-bar size.
+fn slashed(base: &Image<'_>) -> Image<'static> {
+    let (w, h) = (base.width() as f64, base.height() as f64);
+    // From the top left to the bottom right, a little inside the edges.
+    let (x0, y0, x1, y1) = (0.18 * w, 0.12 * h, 0.82 * w, 0.88 * h);
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let len = (dx * dx + dy * dy).sqrt();
+    let (line, gap) = (0.045 * w, 0.09 * w);
+    let mut rgba = base.rgba().to_vec();
+    for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = ((i as f64 % w) + 0.5, (i as f64 / w).floor() + 0.5);
+        let t = (((x - x0) * dx + (y - y0) * dy) / (len * len)).clamp(0.0, 1.0);
+        let d = ((x - x0 - t * dx).powi(2) + (y - y0 - t * dy).powi(2)).sqrt();
+        if d <= line {
+            px.copy_from_slice(&[0, 0, 0, 255]);
+        } else if d <= gap {
+            px[3] = 0;
+        }
+    }
+    Image::new_owned(rgba, base.width(), base.height())
+}
+
 /// The menu-bar icon (black plus transparency) in one color.
 fn tinted(base: &Image<'_>, [r, g, b]: [u8; 3]) -> Image<'static> {
     let mut rgba = base.rgba().to_vec();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         px[..3].copy_from_slice(&[r, g, b]);
     }
     Image::new_owned(rgba, base.width(), base.height())
@@ -125,91 +147,116 @@ fn tinted(base: &Image<'_>, [r, g, b]: [u8; 3]) -> Image<'static> {
 #[derive(Clone)]
 struct TrayItems {
     tray: TrayIcon,
-    /// The plain icon, to tint for each state.
+    menu: Menu<tauri::Wry>,
+    /// The plain icon, to tint or strike through for each state.
     icon: Image<'static>,
-    summary: MenuItem<tauri::Wry>,
-    detail: MenuItem<tauri::Wry>,
-    enabled: CheckMenuItem<tauri::Wry>,
-    modes: Vec<(Mode, CheckMenuItem<tauri::Wry>)>,
+    status: MenuItem<tauri::Wry>,
+    sizes: MenuItem<tauri::Wry>,
+    /// Pause › while on, Resume Tab Guard while paused: one is in the menu.
+    pause: Submenu<tauri::Wry>,
+    resume: MenuItem<tauri::Wry>,
+    showing_resume: Arc<AtomicBool>,
 }
 
-/// The menu-bar title and the two status lines in its menu.
-fn tray_text(cfg: &Config, snap: &Snapshot) -> (Option<String>, String, String) {
-    if !snap.browser_running {
-        let title = (!cfg.enabled).then(|| "Paused".to_string());
-        return (title, "No browser is running".into(), format!("Mode: {}", cfg.mode.label()));
+/// Where Pause › or Resume Tab Guard sits: after the two status lines and a separator.
+const PAUSE_POSITION: usize = 3;
+
+/// "Paused 0:42" in the menu bar while a timed pause runs: hours and
+/// minutes left, rounded up.
+fn pause_countdown(until: u64, now_unix: u64) -> String {
+    let mins = until.saturating_sub(now_unix).div_ceil(60);
+    format!("Paused {}:{:02}", mins / 60, mins % 60)
+}
+
+/// The menu-bar title, the menu's status line, and the line of sizes.
+type TrayText = (Option<String>, String, String);
+
+fn tray_text(cfg: &Config, snap: &Snapshot, now_unix: u64) -> TrayText {
+    if !cfg.enabled {
+        let (title, status) = match cfg.paused_until {
+            Some(until) => (pause_countdown(until, now_unix), format!("Paused until {}", pause_end_text(until, now_unix))),
+            None => ("Paused".to_string(), "Paused until you turn it back on".to_string()),
+        };
+        let sizes = if snap.browser_running { sizes_line(snap) } else { "No browser is running".to_string() };
+        return (Some(title), status, sizes);
     }
+    if !snap.browser_running {
+        return (None, "No browser is running".into(), format!("Mode: {}", cfg.mode.label()));
+    }
+    let detail = match (snap.over, snap.flagged) {
+        // "Whole-browser limit paused until 08:31", without the why.
+        (0, 0) if snap.total_hold.is_some() => {
+            let hold = snap.total_hold.as_deref().unwrap_or_default();
+            hold.split_once(": ").map_or(hold, |(short, _)| short).to_string()
+        }
+        (0, 0) => "Everything's within your limits".to_string(),
+        (0, n) => format!("{n} past the warning level"),
+        (o, _) if !cfg.mode.closes() => format!("{o} would be closed (watch only)"),
+        (o, _) => format!("{o} over a limit, closing"),
+    };
+    let mark = if snap.over > 0 { "⚠︎ " } else { "" };
+    let title = format!("{mark}{:.1}G", snap.total_mb as f64 / 1024.0);
+    (Some(title), detail, sizes_line(snap))
+}
+
+fn sizes_line(snap: &Snapshot) -> String {
     // "Firefox: 9.2 GB", or "Firefox 7.1 GB · Google Chrome 2.3 GB".
     let sizes = match snap.browsers.as_slice() {
         [one] => format!("{}: {}", one.name, gb(snap.total_mb)),
         [] => format!("Browsers: {}", gb(snap.total_mb)),
         _ => snap.browsers.iter().map(|b| format!("{} {}", b.name, gb(b.total_mb))).collect::<Vec<_>>().join(" · "),
     };
-    let summary = format!("{sizes} · {} tab processes", snap.tab_count);
-    let detail = match (snap.over, snap.flagged) {
-        // "Whole-browser limit paused until 08:31", without the why.
-        (0, 0) if cfg.enabled && snap.total_hold.is_some() => {
-            let hold = snap.total_hold.as_deref().unwrap_or_default();
-            hold.split_once(": ").map_or(hold, |(short, _)| short).to_string()
-        }
-        (0, 0) => "Everything's within your limits".to_string(),
-        (0, n) => format!("{n} past the warning level"),
-        (o, _) if !cfg.enabled => format!("{o} would be closed (paused)"),
-        (o, _) if !cfg.mode.closes() => format!("{o} would be closed (watch only)"),
-        (o, _) => format!("{o} over a limit, closing"),
-    };
-    let title = if cfg.enabled {
-        let mark = if snap.over > 0 { "⚠︎ " } else { "" };
-        format!("{mark}{:.1}G", snap.total_mb as f64 / 1024.0)
-    } else {
-        "Paused".to_string()
-    };
-    (Some(title), summary, detail)
+    format!("{sizes} · {} tab processes", snap.tab_count)
 }
 
 impl TrayItems {
     fn refresh(&self, cfg: &Config, snap: &Snapshot) {
-        let (title, summary, detail) = tray_text(cfg, snap);
+        let (title, status, sizes) = tray_text(cfg, snap, unix_now());
         let state = tray_state(cfg, snap);
-        let detail = format!("{} {detail}", state.dot());
-        let _ = match state.color() {
-            Some(color) => self.tray.set_icon(Some(tinted(&self.icon, color))),
-            None => self.tray.set_icon(Some(self.icon.clone())),
+        let _ = match (state, state.color()) {
+            (TrayState::Off, _) => self.tray.set_icon(Some(slashed(&self.icon))),
+            (_, Some(color)) => self.tray.set_icon(Some(tinted(&self.icon, color))),
+            (_, None) => self.tray.set_icon(Some(self.icon.clone())),
         };
         // Set after the icon: a plain one follows the menu bar's light or dark.
         let _ = self.tray.set_icon_as_template(state.color().is_none());
-        let _ = self.enabled.set_checked(cfg.enabled);
-        for (mode, item) in &self.modes {
-            let _ = item.set_checked(*mode == cfg.mode);
-        }
-        let _ = self.summary.set_text(summary);
-        let _ = self.detail.set_text(detail);
+        let _ = self.status.set_text(format!("{} {status}", state.dot()));
+        let _ = self.sizes.set_text(sizes);
         let _ = self.tray.set_title(title);
+
+        let paused = !cfg.enabled;
+        if self.showing_resume.swap(paused, Ordering::Relaxed) != paused {
+            if paused {
+                let _ = self.menu.remove(&self.pause);
+                let _ = self.menu.insert(&self.resume, PAUSE_POSITION);
+            } else {
+                let _ = self.menu.remove(&self.resume);
+                let _ = self.menu.insert(&self.pause, PAUSE_POSITION);
+            }
+        }
     }
 }
 
+/// The menu: what's happening, Pause › (or Resume), Open, Quit. Modes,
+/// limits and About live in the window.
 fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
-    let summary = MenuItem::with_id(app, "summary", "Checking your browsers…", false, None::<&str>)?;
-    let detail = MenuItem::with_id(app, "detail", "", false, None::<&str>)?;
-    let enabled = CheckMenuItem::with_id(app, "enabled", "Tab Guard On", true, cfg.enabled, None::<&str>)?;
-    let modes: Vec<(Mode, CheckMenuItem<tauri::Wry>)> = [Mode::Watch, Mode::WarnThenClose, Mode::Close]
-        .into_iter()
-        .map(|m| {
-            let id = format!("mode:{}", serde_json::to_string(&m).unwrap().trim_matches('"'));
-            CheckMenuItem::with_id(app, id, m.label(), true, m == cfg.mode, None::<&str>).map(|i| (m, i))
-        })
-        .collect::<tauri::Result<_>>()?;
-    let mode_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        modes.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
-    let mode_menu = Submenu::with_items(app, "Mode", true, &mode_refs)?;
+    let status = MenuItem::with_id(app, "status", "Checking your browsers…", false, None::<&str>)?;
+    let sizes = MenuItem::with_id(app, "sizes", "", false, None::<&str>)?;
+    let pause = Submenu::with_items(
+        app,
+        "Pause",
+        true,
+        &[
+            &MenuItem::with_id(app, "pause:hour", "For 1 hour", true, None::<&str>)?,
+            &MenuItem::with_id(app, "pause:tomorrow", "Until tomorrow", true, None::<&str>)?,
+            &MenuItem::with_id(app, "pause:off", "Until I turn it back on", true, None::<&str>)?,
+        ],
+    )?;
+    let resume = MenuItem::with_id(app, "resume", "Resume Tab Guard", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Tab Guard…", true, None::<&str>)?;
-    let about = MenuItem::with_id(app, "about", "About Tab Guard", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Tab Guard", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(
-        app,
-        &[&summary, &detail, &sep()?, &enabled, &mode_menu, &sep()?, &open, &about, &sep()?, &quit],
-    )?;
+    let menu = Menu::with_items(app, &[&status, &sizes, &sep()?, &pause, &open, &sep()?, &quit])?;
 
     let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?.to_owned();
     let tray = TrayIconBuilder::with_id("tab-guard")
@@ -221,44 +268,43 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
         .on_menu_event(|app, event| {
             let shared = app.state::<Arc<Shared>>();
             let id = event.id.as_ref();
-            match id {
-                "open" => show_window(app, None),
-                "about" => show_window(app, Some("about")),
-                "quit" => app.exit(0),
-                "enabled" => update_config(app, &shared, |c| c.enabled = !c.enabled),
-                _ => {
-                    if let Some(mode) = id.strip_prefix("mode:") {
-                        if let Ok(m) = serde_json::from_str::<Mode>(&format!("\"{mode}\"")) {
-                            update_config(app, &shared, |c| c.mode = m);
-                        }
-                    }
+            let pause_until = |until: Option<u64>| {
+                move |c: &mut Config| {
+                    c.enabled = false;
+                    c.paused_until = until;
                 }
+            };
+            match id {
+                "open" => show_window(app),
+                "quit" => app.exit(0),
+                "pause:hour" => update_config(app, &shared, pause_until(Some(unix_now() + 3600))),
+                "pause:tomorrow" => update_config(app, &shared, pause_until(Some(tomorrow_morning(unix_now())))),
+                "pause:off" => update_config(app, &shared, pause_until(None)),
+                "resume" => update_config(app, &shared, |c| c.enabled = true),
+                _ => {}
             }
         })
         .build(app)?;
 
-    let items = TrayItems { tray, icon, summary, detail, enabled, modes };
+    let showing_resume = Arc::new(AtomicBool::new(false));
+    let items = TrayItems { tray, menu, icon, status, sizes, pause, resume, showing_resume };
     items.refresh(cfg, &Snapshot::default());
     Ok(items)
 }
 
 const MIN_HEIGHT: f64 = 480.0;
 
-/// Open the window, creating it if needed, optionally on one of its tabs
-/// ("about"). It's destroyed again when closed, so its web view isn't holding
-/// memory while Tab Guard sits in the menu bar.
-fn show_window(app: &AppHandle, panel: Option<&'static str>) {
+/// Open the window, creating it if needed. It's destroyed again when
+/// closed, so its web view isn't holding memory while Tab Guard sits in the
+/// menu bar.
+fn show_window(app: &AppHandle) {
     let shared = app.state::<Arc<Shared>>();
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
-        if let Some(p) = panel {
-            let _ = w.eval(format!("window.showPanel && showPanel('{p}')"));
-        }
     } else {
-        let page = panel.map_or("index.html".to_string(), |p| format!("index.html#{p}"));
-        let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(page.into()))
+        let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Tab Guard")
             .inner_size(980.0, 680.0)
             .min_inner_size(720.0, MIN_HEIGHT)
@@ -306,11 +352,13 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     // which tabs are idle.
     sampler.sample();
     std::thread::sleep(Duration::from_secs(1));
-    let mut last_tray: Option<((Option<String>, String, String), TrayState)> = None;
+    // What the menu bar shows: its text, and the shield's state.
+    let mut last_tray: Option<(TrayText, TrayState)> = None;
     loop {
         let (procs, browsers) = sampler.sample();
         let (cfg, snap, closed, counted) = {
             let mut g = shared.guard.lock().unwrap();
+            g.resume_if_due(unix_now());
             let closed = g.pass(&procs, &browsers, Instant::now(), &mut close_process);
             (g.config.clone(), g.snapshot.clone(), closed, g.take_usage())
         };
@@ -329,7 +377,7 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
         // thread takes `guard` to answer the window's commands. Making them
         // while holding `guard` deadlocks the app, so they come after. Skip
         // them entirely when nothing visible changed.
-        let text = (tray_text(&cfg, &snap), tray_state(&cfg, &snap));
+        let text = (tray_text(&cfg, &snap, unix_now()), tray_state(&cfg, &snap));
         if last_tray.as_ref() != Some(&text) {
             if let Some(items) = app.try_state::<TrayItems>() {
                 items.refresh(&cfg, &snap);
@@ -685,7 +733,7 @@ pub fn run() {
             // The welcome card asks about usage sharing, so show it until
             // it's been answered, including on installs from before it existed.
             if first_run || !config.welcomed {
-                show_window(app.handle(), None);
+                show_window(app.handle());
             }
             if config.share_usage {
                 usage::send(vec![usage::started(config.mode)]);
@@ -706,7 +754,7 @@ pub fn run() {
         RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
         // Opening Tab Guard again (from Spotlight or Applications) while it's
         // running shows the window.
-        RunEvent::Reopen { .. } => show_window(app, None),
+        RunEvent::Reopen { .. } => show_window(app),
         _ => {}
     });
 }
@@ -714,7 +762,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Mode;
     use crate::engine::Row;
+
+    const NOW: u64 = 1_793_178_785;
 
     fn snap(total_mb: u64, over: usize, flagged: usize) -> Snapshot {
         Snapshot { browser_running: true, total_mb, tab_count: 20, over, flagged, rows: Vec::<Row>::new(), ..Default::default() }
@@ -723,10 +774,12 @@ mod tests {
     #[test]
     fn tray_title_shows_total_and_warning() {
         let cfg = Config::default();
-        assert_eq!(tray_text(&cfg, &snap(9216, 0, 0)).0.as_deref(), Some("9.0G"));
-        assert_eq!(tray_text(&cfg, &snap(9216, 1, 0)).0.as_deref(), Some("⚠︎ 9.0G"));
+        assert_eq!(tray_text(&cfg, &snap(9216, 0, 0), NOW).0.as_deref(), Some("9.0G"));
+        assert_eq!(tray_text(&cfg, &snap(9216, 1, 0), NOW).0.as_deref(), Some("⚠︎ 9.0G"));
         let paused = Config { enabled: false, ..Config::default() };
-        assert_eq!(tray_text(&paused, &snap(9216, 1, 0)).0.as_deref(), Some("Paused"));
+        assert_eq!(tray_text(&paused, &snap(9216, 1, 0), NOW).0.as_deref(), Some("Paused"));
+        let for_a_while = Config { paused_until: Some(NOW + 42 * 60), ..paused.clone() };
+        assert_eq!(tray_text(&for_a_while, &snap(9216, 1, 0), NOW).0.as_deref(), Some("Paused 0:42"));
     }
 
     #[test]
@@ -752,7 +805,8 @@ mod tests {
             assert_eq!(tray_state(cfg, &s), want, "{:?} over {} flagged {}", cfg.mode, s.over, s.flagged);
         }
         assert_eq!(Watching.color(), None, "the plain icon follows the menu bar");
-        assert!([Off, Guarding, Attention, Closing].iter().all(|s| s.color().is_some()));
+        assert_eq!(Off.color(), None, "paused is the plain shield, struck through");
+        assert!([Guarding, Attention, Closing].iter().all(|s| s.color().is_some()));
     }
 
     #[test]
@@ -766,13 +820,40 @@ mod tests {
     #[test]
     fn tray_detail_says_whether_it_will_close() {
         let watch = Config::default();
-        assert_eq!(tray_text(&watch, &snap(1, 2, 0)).2, "2 would be closed (watch only)");
+        assert_eq!(tray_text(&watch, &snap(1, 2, 0), NOW).1, "2 would be closed (watch only)");
         let close = Config { mode: Mode::Close, ..Config::default() };
-        assert_eq!(tray_text(&close, &snap(1, 2, 0)).2, "2 over a limit, closing");
+        assert_eq!(tray_text(&close, &snap(1, 2, 0), NOW).1, "2 over a limit, closing");
         let paused = Config { enabled: false, ..close.clone() };
-        assert_eq!(tray_text(&paused, &snap(1, 2, 0)).2, "2 would be closed (paused)");
-        assert_eq!(tray_text(&close, &snap(1, 0, 3)).2, "3 past the warning level");
-        assert_eq!(tray_text(&close, &snap(1, 0, 0)).2, "Everything's within your limits");
+        assert_eq!(tray_text(&paused, &snap(1, 2, 0), NOW).1, "Paused until you turn it back on");
+        assert_eq!(tray_text(&paused, &snap(1, 2, 0), NOW).2, "Browsers: 0.0 GB · 20 tab processes", "sizes still show");
+        assert_eq!(tray_text(&close, &snap(1, 0, 3), NOW).1, "3 past the warning level");
+        assert_eq!(tray_text(&close, &snap(1, 0, 0), NOW).1, "Everything's within your limits");
+    }
+
+    #[test]
+    fn a_timed_pause_says_when_it_ends() {
+        let paused = Config { enabled: false, paused_until: Some(tomorrow_morning(NOW)), ..Config::default() };
+        let (title, status, _) = tray_text(&paused, &Snapshot::default(), NOW);
+        assert_eq!(status, "Paused until tomorrow 06:00");
+        assert!(title.unwrap().starts_with("Paused "));
+    }
+
+    #[test]
+    fn the_countdown_rounds_up_to_the_minute() {
+        assert_eq!(pause_countdown(NOW + 3600, NOW), "Paused 1:00");
+        assert_eq!(pause_countdown(NOW + 61, NOW), "Paused 0:02");
+        assert_eq!(pause_countdown(NOW + 20 * 3600, NOW), "Paused 20:00");
+        assert_eq!(pause_countdown(NOW, NOW + 5), "Paused 0:00", "a pause just ended reads as none left");
+    }
+
+    #[test]
+    fn the_slash_crosses_the_middle_with_a_gap() {
+        let base = Image::new_owned([0u8, 0, 0, 255].repeat(44 * 44), 44, 44);
+        let s = slashed(&base);
+        let alpha = |x: usize, y: usize| s.rgba()[(y * 44 + x) * 4 + 3];
+        assert_eq!(alpha(22, 22), 255, "the slash itself");
+        assert_eq!(alpha(24, 20), 0, "the gap beside it");
+        assert_eq!(alpha(40, 4), 255, "the shield away from the slash");
     }
 
     #[test]
@@ -782,9 +863,9 @@ mod tests {
             total_hold: Some("Whole-browser limit paused until 08:31: closing a 0.9 GB tab didn't help".into()),
             ..snap(9216, 0, 0)
         };
-        assert_eq!(tray_text(&close, &held).2, "Whole-browser limit paused until 08:31");
+        assert_eq!(tray_text(&close, &held, NOW).1, "Whole-browser limit paused until 08:31");
         // A tab over its own limit still comes first.
-        assert_eq!(tray_text(&close, &Snapshot { over: 1, ..held }).2, "1 over a limit, closing");
+        assert_eq!(tray_text(&close, &Snapshot { over: 1, ..held }, NOW).1, "1 over a limit, closing");
     }
 
     #[test]
@@ -833,9 +914,9 @@ mod tests {
         };
         let mut s = snap(9625, 0, 0);
         s.browsers = vec![b(1, "Firefox", 7270)];
-        assert_eq!(tray_text(&Config::default(), &s).1, "Firefox: 9.4 GB · 20 tab processes");
+        assert_eq!(tray_text(&Config::default(), &s, NOW).2, "Firefox: 9.4 GB · 20 tab processes");
         s.browsers.push(b(2, "Firefox Nightly", 2355));
-        assert_eq!(tray_text(&Config::default(), &s).1, "Firefox 7.1 GB · Firefox Nightly 2.3 GB · 20 tab processes");
+        assert_eq!(tray_text(&Config::default(), &s, NOW).2, "Firefox 7.1 GB · Firefox Nightly 2.3 GB · 20 tab processes");
     }
 
     #[test]
@@ -850,9 +931,9 @@ mod tests {
     #[test]
     fn tray_without_a_browser() {
         let none = Snapshot::default();
-        let (title, summary, _) = tray_text(&Config::default(), &none);
+        let (title, status, _) = tray_text(&Config::default(), &none, NOW);
         assert_eq!(title, None);
-        assert_eq!(summary, "No browser is running");
+        assert_eq!(status, "No browser is running");
     }
 
     #[test]

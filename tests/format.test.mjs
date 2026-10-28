@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc,
   keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices, headline, whichSite,
+  pauseEnd,
 } from "../src/format.js";
 
 const config = {
@@ -192,4 +193,14 @@ test("which site is which: about:processes for Firefox, process-internals for Ch
     ["Firefox", "Open about:processes in Firefox"],
     ["Google Chrome", "Open chrome://process-internals in Google Chrome"],
   ]);
+});
+
+test("a timed pause says when it ends", () => {
+  const now = new Date(2026, 9, 28, 13, 48).getTime() / 1000;
+  const at = (d, h, m) => new Date(2026, 9, d, h, m).getTime() / 1000;
+  assert.equal(pauseEnd(at(28, 14, 48), now), "14:48");
+  assert.equal(pauseEnd(at(29, 6, 0), now), "tomorrow 06:00");
+  const paused = { ...config, enabled: false, paused_until: at(28, 14, 48) };
+  assert.match(bannerText(paused, { over: 0 }, now), /^Tab Guard is paused until 14:48, then turns itself back on\./);
+  assert.match(bannerText({ ...paused, paused_until: null }, { over: 0 }, now), /until you turn it back on/);
 });
