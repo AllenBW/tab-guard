@@ -14,8 +14,8 @@ once a draft is published, so every release gets a quick smoke test first.
    ```
 3. Wait for **Release Build (Draft)** (about 15 minutes), then download the DMG from the draft
    release and check: it opens without a Gatekeeper warning, the menu-bar icon appears, the
-   window opens, and **Which site is which?** works with Firefox (about:processes) and Chrome (it
-   comes forward).
+   window opens, and **Which site is which?** opens about:processes in Firefox and
+   chrome://process-internals in Chrome.
 4. Publish the draft. Installed copies pick it up within 6 hours (or on **Check for updates**).
 
 ## One-time setup

@@ -361,8 +361,8 @@ fn open_link(name: String) -> Result<(), String> {
     std::process::Command::new("open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Where a browser shows which site is in which process: Firefox's
-/// about:processes page, or the Task Manager in Chrome-family browsers.
+/// Where a browser shows which site is in which process: about:processes in
+/// Firefox-family browsers, chrome://process-internals in Chrome-family ones.
 /// `browser` says which browser (by its app, so two profiles of the same app
 /// can't be told apart). Async so the wait runs off the main thread.
 #[tauri::command]
@@ -376,15 +376,26 @@ async fn open_about_processes(browser: Option<u32>, shared: State<'_, Arc<Shared
     match family {
         sampler::Family::Gecko => Ok(open_gecko_processes_page(&app, &name)),
         sampler::Family::Chromium => {
-            // Chrome won't open its internal pages for other apps, and its
-            // Task Manager has no address, so bring it forward and say where.
-            let _ = run_with_timeout(std::process::Command::new("open").args(["-a", &app]), Duration::from_secs(5));
-            Ok(task_manager_hint(&name))
+            // Chrome-family browsers open their own pages when handed the
+            // address, unlike Firefox (whose about: scheme `open` doesn't know).
+            let opened = run_with_timeout(
+                std::process::Command::new("open").args(["-a", &app, PROCESS_INTERNALS]),
+                Duration::from_secs(5),
+            );
+            Ok(if opened {
+                format!("Opened {name}'s process page. Under Frame Trees, each tab is listed with its site and process ID.")
+            } else {
+                task_manager_hint(&name)
+            })
         }
     }
 }
 
-/// Where to find the Task Manager in a Chrome-family browser. Chrome keeps
+/// The Chrome page that lists each tab's frames with their site and process.
+const PROCESS_INTERNALS: &str = "chrome://process-internals/#web-contents";
+
+/// If the process page can't be opened: where to find the Task Manager in a
+/// Chrome-family browser. Chrome keeps
 /// it under Window; the others move it around, so they get a general hint.
 fn task_manager_hint(name: &str) -> String {
     if name.starts_with("Google Chrome") || name.starts_with("Chromium") {

@@ -42,5 +42,5 @@ signature-checked before it's installed.
 
 macOS asks once whether Tab Guard may control Firefox (or another Firefox-based browser). That
 permission is only used by the **Which site is which?** button, to ask the browser to open its
-`about:processes` page. For Chrome-family browsers that button only brings the browser forward,
-which needs no permission.
+`about:processes` page. Chrome-family browsers are handed the address of their
+`chrome://process-internals` page the ordinary way, which needs no permission.

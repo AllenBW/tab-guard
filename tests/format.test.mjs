@@ -180,16 +180,16 @@ test("the headline names the browser, or says browsers", () => {
   assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }, { name: "Google Chrome" }] }), "Your browsers are using 9.0 GB across 21 tab processes");
 });
 
-test("which site is which: about:processes for Firefox, the Task Manager for Chrome", () => {
+test("which site is which: about:processes for Firefox, process-internals for Chrome", () => {
   const firefox = { id: 1, name: "Firefox", family: "gecko" };
   const chrome = { id: 2, name: "Google Chrome", family: "chromium" };
   assert.deepEqual(whichSite([firefox]).buttons, [{ id: 1, label: "Which site is which? Open about:processes", aria: "Which site is which? Open about:processes" }]);
-  assert.equal(whichSite([chrome]).buttons[0].label, "Which site is which? Open its Task Manager");
+  assert.equal(whichSite([chrome]).buttons[0].label, "Which site is which? Open chrome://process-internals");
   assert.equal(whichSite([]).buttons[0].id, null);
   const both = whichSite([firefox, chrome]);
   assert.equal(both.intro, "Which site is which? Open");
   assert.deepEqual(both.buttons.map((b) => [b.label, b.aria]), [
     ["Firefox", "Open about:processes in Firefox"],
-    ["Google Chrome", "Show the Task Manager in Google Chrome"],
+    ["Google Chrome", "Open chrome://process-internals in Google Chrome"],
   ]);
 });

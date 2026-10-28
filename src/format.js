@@ -132,11 +132,12 @@ export function headline(s) {
 
 /** "Which site is which?": where each browser shows the site in each
  *  process. Firefox-family browsers have about:processes; Chrome-family
- *  ones have a Task Manager. Returns the text before the buttons, and the
- *  buttons (one with no text before it when only one browser runs). */
+ *  ones have chrome://process-internals. Returns the text before the
+ *  buttons, and the buttons (one with no text before it when only one
+ *  browser runs). */
 export function whichSite(browsers) {
-  const place = (b) => (b.family === "chromium" ? "its Task Manager" : "about:processes");
-  const aria = (b) => (b.family === "chromium" ? `Show the Task Manager in ${b.name}` : `Open about:processes in ${b.name}`);
+  const place = (b) => (b.family === "chromium" ? "chrome://process-internals" : "about:processes");
+  const aria = (b) => `Open ${place(b)} in ${b.name}`;
   if (browsers.length < 2) {
     const b = browsers[0];
     const label = `Which site is which? Open ${b ? place(b) : "about:processes"}`;
