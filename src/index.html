@@ -10,7 +10,7 @@
   <body>
     <header class="top">
       <div class="headline">
-        <h1 id="headline">Checking Firefox…</h1>
+        <h1 id="headline">Checking your browsers…</h1>
         <p id="subline" class="muted"></p>
       </div>
       <label class="switch" title="Turn Tab Guard on or off">
@@ -37,13 +37,14 @@
     <section id="welcome" class="welcome" aria-labelledby="welcome-title" hidden>
       <h2 id="welcome-title">Welcome to Tab Guard</h2>
       <p>
-        Tab Guard watches Firefox's tab processes from the menu bar. When one grows past your limits it can
-        close it, and Firefox shows that tab as crashed with a <b>Restore</b> button. New installs start in
-        <b>Watch only</b>, so nothing is closed until you pick another mode above.
+        Tab Guard watches your browser's tabs from the menu bar (Firefox and Chrome, and browsers built on
+        them). When a tab grows past your limits it can close it, and the browser shows that tab as crashed,
+        with a button to reload it. New installs start in <b>Watch only</b>, so nothing is closed until you
+        pick another mode above.
       </p>
       <p>
-        The first time you use <b>Which site is which?</b>, macOS asks whether Tab Guard may control Firefox.
-        That's only used to open Firefox's about:processes page.
+        The first time you use <b>Which site is which?</b> with Firefox, macOS asks whether Tab Guard may
+        control it. That's only used to open its about:processes page.
       </p>
       <label class="check usage-row"><input type="checkbox" id="welcome-usage" />
         <span>Share anonymous usage counts<br />
@@ -67,9 +68,9 @@
           <span class="spacer"></span>
           <span id="about-processes" class="about-processes"></span>
         </div>
-        <div class="scroll-box" tabindex="0" role="region" aria-label="Firefox processes">
+        <div class="scroll-box" tabindex="0" role="region" aria-label="Browser processes">
         <table>
-          <caption class="visually-hidden">Firefox processes, biggest first</caption>
+          <caption class="visually-hidden">Browser processes, biggest first</caption>
           <thead>
             <tr>
               <th scope="col">Process</th>
@@ -85,8 +86,8 @@
         </table>
         </div>
         <p class="muted small">
-          Memory is each process's own footprint (what Activity Monitor shows). Firefox doesn't tell
-          other apps which website runs in which process; its about:processes page does.
+          Memory is each process's own footprint (what Activity Monitor shows). Browsers don't tell
+          other apps which website runs in which process; Firefox's about:processes and Chrome's Task Manager do.
         </p>
       </section>
 
@@ -95,7 +96,7 @@
           <div id="limit-picker" class="limit-picker" hidden>
             <span id="limit-picker-label">Limits for</span>
             <div id="limit-targets" class="segmented small-seg" role="radiogroup" aria-labelledby="limit-picker-label"></div>
-            <small class="muted">Each copy of Firefox has its own per-tab and whole-browser limits. Everything else applies to all of them.</small>
+            <small class="muted">Each browser has its own per-tab and whole-browser limits. Everything else applies to all of them.</small>
           </div>
           <fieldset>
             <legend>Per-tab limits<span class="limit-for"></span></legend>
@@ -106,7 +107,7 @@
           </fieldset>
           <fieldset>
             <legend>Whole-browser limit<span class="limit-for"></span></legend>
-            <label><span id="total-label">When all of Firefox passes</span>
+            <label><span id="total-label">When the whole browser passes</span>
               <span class="field"><input type="number" name="total_gb" step="0.5" min="0" /> GB</span>
               <small>Closes the biggest tab. 0 turns this off.</small></label>
             <label>But never close a tab smaller than
@@ -125,9 +126,9 @@
             <label class="check"><input type="checkbox" name="prefer_idle" /> Prefer idle tabs (ones you're probably not using)</label>
             <label>A tab counts as idle under
               <span class="field"><input type="number" name="idle_cpu_percent" step="0.5" min="0" /> % CPU</span></label>
-            <label>If closing a tab doesn't bring Firefox down, pause this limit for
+            <label>If closing a tab doesn't bring the browser down, pause this limit for
               <span class="field"><input type="number" name="total_backoff_mins" step="5" min="0" /> minutes</span>
-              <small>Some of Firefox's memory isn't in any tab, so closing more won't help. 0 never pauses.</small></label>
+              <small>Some of a browser's memory isn't in any tab, so closing more won't help. 0 never pauses.</small></label>
             <label>Close at most
               <span class="field"><input type="number" name="total_max_per_hour" step="1" min="0" /> tabs an hour for this limit</span>
               <small>0 means no cap. Per-tab limits aren't affected by either setting.</small></label>
@@ -155,7 +156,7 @@
           <div class="about-body">
             <h2>Tab Guard</h2>
             <p class="muted"><span id="version"></span></p>
-            <p>Keeps Firefox tabs from eating your Mac's memory. Free and open source under the MIT license.</p>
+            <p>Keeps runaway browser tabs from eating your Mac's memory. Free and open source under the MIT license.</p>
             <div class="about-update">
               <button type="button" id="check-updates">Check for updates</button>
               <small id="update-status" class="muted"></small>

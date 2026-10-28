@@ -1,12 +1,15 @@
-//! Finds Firefox's processes and measures them, straight from the kernel.
+//! Finds browsers' processes and measures them, straight from the kernel.
 //!
-//! Each pass lists every pid, but only looks closely at Firefox's: a pid's
+//! Each pass lists every pid, but only looks closely at browsers': a pid's
 //! path and arguments are read once and cached, and one `proc_pid_rusage`
-//! call per Firefox process gives its memory, CPU time and start time.
+//! call per browser process gives its memory, CPU time and start time.
 //!
-//! Several copies of Firefox can run at once (release, Nightly, Developer
-//! Edition, or one copy with a second profile). Each process is tied to the
-//! copy that started it, so their limits can be applied separately.
+//! Two families are supported, both of which run each site in its own
+//! process and show a closed one as a crashed tab the user can reload:
+//! Firefox and the browsers built on it, and Chrome and the browsers built
+//! on Chromium. Several can run at once (or one with a second profile).
+//! Each process is tied to the browser that started it, so their limits can
+//! be applied separately.
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -21,10 +24,42 @@ pub enum Kind {
     Other,
 }
 
+/// Which engine a browser is built on. It decides how its processes are
+/// told apart and how the user finds out which site is in which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Family {
+    /// Firefox, Zen, LibreWolf, Waterfox, Floorp, Mullvad Browser, Tor Browser.
+    Gecko,
+    /// Chrome, Edge, Brave, Arc, Vivaldi, Opera, Chromium.
+    Chromium,
+}
+
+/// Supported browsers, by the start of their app's name. "Firefox" also
+/// covers "Firefox Nightly"; "Google Chrome" covers "Google Chrome Beta".
+/// Apps built on the same engines that aren't browsers (Thunderbird, or
+/// Electron apps like Slack) aren't listed, so they're left alone.
+const BROWSERS: [(&str, Family); 14] = [
+    ("Firefox", Family::Gecko),
+    ("Zen", Family::Gecko),
+    ("LibreWolf", Family::Gecko),
+    ("Waterfox", Family::Gecko),
+    ("Floorp", Family::Gecko),
+    ("Mullvad Browser", Family::Gecko),
+    ("Tor Browser", Family::Gecko),
+    ("Google Chrome", Family::Chromium),
+    ("Microsoft Edge", Family::Chromium),
+    ("Brave Browser", Family::Chromium),
+    ("Arc", Family::Chromium),
+    ("Vivaldi", Family::Chromium),
+    ("Opera", Family::Chromium),
+    ("Chromium", Family::Chromium),
+];
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Proc {
     pub pid: u32,
-    /// The copy of Firefox it belongs to: a `Browser::id`.
+    /// The browser it belongs to: a `Browser::id`.
     pub browser: u32,
     pub kind: Kind,
     /// Physical footprint, the number Activity Monitor shows as "Memory".
@@ -37,14 +72,15 @@ pub struct Proc {
     pub growth_mb_per_min: f64,
 }
 
-/// One running copy of Firefox.
+/// One running browser.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Browser {
     /// Its main process's pid.
     pub id: u32,
-    /// "Firefox", "Firefox Nightly", "Firefox (work)", "Firefox (2)"
+    /// "Firefox", "Firefox Nightly", "Google Chrome", "Firefox (work)", "Firefox (2)"
     pub name: String,
-    /// The app bundle, for asking it to open about:processes.
+    pub family: Family,
+    /// The app bundle, for bringing it forward or opening about:processes.
     pub app: String,
     /// What its settings are saved under: the app, plus the profile if it
     /// was started with one. Stays the same from one launch to the next.
@@ -71,18 +107,19 @@ pub fn key_name(key: &str) -> String {
 
 #[derive(Debug, Clone)]
 enum Known {
-    NotFirefox,
+    NotBrowser,
     /// `start` tells a reused pid apart from the process we classified.
-    Firefox { kind: Kind, start: u64, parent: u32, app: String, profile: Option<String> },
+    Browser { kind: Kind, start: u64, parent: u32, family: Family, app: String, profile: Option<String> },
 }
 
-/// What grouping needs to know about one Firefox process.
+/// What grouping needs to know about one browser process.
 #[derive(Debug, Clone)]
 pub struct Member<'a> {
     pub pid: u32,
     pub kind: Kind,
     pub parent: u32,
     pub start: u64,
+    pub family: Family,
     pub app: &'a str,
     pub profile: Option<&'a str>,
 }
@@ -95,6 +132,8 @@ pub struct Sampler {
     prev_cpu: HashMap<u32, (u64, u64)>,
     /// pid -> recent (time, MB) samples, for the growth rate.
     history: HashMap<u32, VecDeque<(Instant, u64)>>,
+    /// App bundle -> the name of its main executable, read once per app.
+    main_exe: HashMap<String, String>,
     pid_buf: Vec<libc::pid_t>,
 }
 
@@ -110,6 +149,7 @@ impl Sampler {
             known: HashMap::new(),
             prev_cpu: HashMap::new(),
             history: HashMap::new(),
+            main_exe: HashMap::new(),
             pid_buf: Vec::new(),
         }
     }
@@ -118,8 +158,8 @@ impl Sampler {
         (ticks as u128 * self.timebase.0 as u128 / self.timebase.1 as u128) as u64
     }
 
-    /// Firefox's processes, biggest first, and the copies of Firefox they
-    /// belong to, oldest first.
+    /// Browsers' processes, biggest first, and the browsers they belong to,
+    /// oldest first.
     pub fn sample(&mut self) -> (Vec<Proc>, Vec<Browser>) {
         list_pids(&mut self.pid_buf);
         let now = Instant::now();
@@ -137,8 +177,11 @@ impl Sampler {
             if pid == 0 {
                 continue;
             }
-            let known = self.known.entry(pid).or_insert_with(|| identify(pid));
-            let Known::Firefox { kind, start, parent, .. } = *known else { continue };
+            if !self.known.contains_key(&pid) {
+                let k = identify(pid, &mut self.main_exe);
+                self.known.insert(pid, k);
+            }
+            let Some(&Known::Browser { kind, start, parent, .. }) = self.known.get(&pid) else { continue };
             let Some(ri) = rusage(pid) else {
                 self.known.remove(&pid);
                 continue;
@@ -174,10 +217,10 @@ impl Sampler {
         let members: Vec<Member> = members
             .iter()
             .filter_map(|&(pid, kind, parent, start)| match self.known.get(&pid)? {
-                Known::Firefox { app, profile, .. } => {
-                    Some(Member { pid, kind, parent, start, app, profile: profile.as_deref() })
+                Known::Browser { family, app, profile, .. } => {
+                    Some(Member { pid, kind, parent, start, family: *family, app, profile: profile.as_deref() })
                 }
-                Known::NotFirefox => None,
+                Known::NotBrowser => None,
             })
             .collect();
         let (of, browsers) = group(&members);
@@ -189,23 +232,50 @@ impl Sampler {
     }
 }
 
-/// Look at a pid we haven't seen before.
-fn identify(pid: u32) -> Known {
-    let Some(path) = pid_path(pid) else { return Known::NotFirefox };
-    if !is_firefox_path(&path) {
-        return Known::NotFirefox;
-    }
-    let kind_needs_args = path.contains("plugin-container") || path.ends_with("/MacOS/firefox");
-    let args = if kind_needs_args { proc_args(pid).unwrap_or_default() } else { Vec::new() };
+/// Look at a pid we haven't seen before. `main_exe` caches each app's main
+/// executable name.
+fn identify(pid: u32, main_exe: &mut HashMap<String, String>) -> Known {
+    let Some(path) = pid_path(pid) else { return Known::NotBrowser };
+    let Some((family, app)) = browser_app(&path) else { return Known::NotBrowser };
+    let exe = main_exe.entry(app.to_string()).or_insert_with(|| main_executable(app, family));
+    let is_main = path == format!("{app}/Contents/MacOS/{exe}");
+    let args = proc_args(pid).unwrap_or_default();
     let start = rusage(pid).map(|r| r.ri_proc_start_abstime).unwrap_or(0);
-    let kind = classify(&path, &args);
-    let profile = if kind == Kind::Main { profile_name(&args) } else { None };
-    Known::Firefox { kind, start, parent: parent_pid(pid), app: app_bundle(&path).to_string(), profile }
+    let kind = classify(family, &path, &args, is_main);
+    // Chromium browsers run every profile in one process; Firefox runs one per profile.
+    let profile = if kind == Kind::Main && family == Family::Gecko { profile_name(&args) } else { None };
+    Known::Browser { kind, start, parent: parent_pid(pid), family, app: app.to_string(), profile }
 }
 
-/// "/Applications/Firefox Nightly.app" from any path inside it.
-pub fn app_bundle(path: &str) -> &str {
-    path.find(".app/Contents/MacOS/").map_or(path, |i| &path[..i + 4])
+/// The outermost app bundle a path is in: "/Applications/Google
+/// Chrome.app" for its main executable and for the helper apps nested inside.
+pub fn app_bundle(path: &str) -> Option<&str> {
+    let i = path.find(".app/Contents/")?;
+    Some(&path[..i + 4])
+}
+
+/// The family and app bundle of a supported browser's process.
+pub fn browser_app(path: &str) -> Option<(Family, &str)> {
+    let app = app_bundle(path)?;
+    let name = app.rsplit('/').next()?.trim_end_matches(".app");
+    let (_, family) = BROWSERS.iter().find(|(start, _)| name == *start || name.starts_with(&format!("{start} ")))?;
+    Some((*family, app))
+}
+
+/// The name of an app's main executable, from its Info.plist, with a
+/// sensible guess if that can't be read.
+fn main_executable(app: &str, family: Family) -> String {
+    let plist = format!("{app}/Contents/Info.plist");
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleExecutable", "raw", "-o", "-", &plist])
+        .output();
+    match out {
+        Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => match family {
+            Family::Gecko => "firefox".into(),
+            Family::Chromium => app.rsplit('/').next().unwrap_or(app).trim_end_matches(".app").to_string(),
+        },
+    }
 }
 
 /// The profile a copy of Firefox was started with (`-P work`, or
@@ -217,11 +287,11 @@ pub fn profile_name(args: &[String]) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Tie each process to the copy of Firefox it belongs to, and name the
-/// copies. A process belongs to the Firefox that started it; one that was
-/// handed to launchd (the crash helper does this) belongs to the oldest
-/// Firefox from the same app. Returns pid -> browser id, and the browsers,
-/// oldest first.
+/// Tie each process to the browser it belongs to, and name the browsers.
+/// A process belongs to the browser that started it; one that was handed to
+/// launchd (Firefox's crash helper does this) belongs to the oldest browser
+/// from the same app. Returns pid -> browser id, and the browsers, oldest
+/// first.
 pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
     let mut mains: Vec<&Member> = members.iter().filter(|m| m.kind == Kind::Main).collect();
     mains.sort_by_key(|m| (m.start, m.pid));
@@ -233,7 +303,7 @@ pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
         } else {
             mains.iter().find(|b| b.pid == m.parent).or_else(|| mains.iter().find(|b| b.app == m.app)).map(|b| b.pid)
         };
-        // Firefox itself is gone but this process isn't yet: it stands alone.
+        // The browser itself is gone but this process isn't yet: it stands alone.
         let owner = owner.unwrap_or_else(|| {
             orphans.push(m);
             m.pid
@@ -246,7 +316,7 @@ pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
         .chain(orphans.iter())
         .map(|m| {
             let key = browser_key(m.app, m.profile);
-            Browser { id: m.pid, name: key_name(&key), app: m.app.to_string(), key }
+            Browser { id: m.pid, name: key_name(&key), family: m.family, app: m.app.to_string(), key }
         })
         .collect();
     // Two copies with the same name: number the later ones.
@@ -260,29 +330,36 @@ pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
     (of, browsers)
 }
 
-/// True for executables inside any Firefox app bundle (release, Developer
-/// Edition, Nightly), wherever it's installed.
-pub fn is_firefox_path(path: &str) -> bool {
-    let Some(i) = path.find(".app/Contents/MacOS/") else { return false };
-    let bundle = path[..i].rsplit('/').next().unwrap_or("");
-    bundle.starts_with("Firefox")
-}
-
-/// Which kind of Firefox process this is. `path` must be a Firefox path.
-pub fn classify(path: &str, args: &[String]) -> Kind {
-    if path.ends_with("/MacOS/firefox") {
+/// Which kind of browser process this is. `is_main` says it's the app's
+/// own executable.
+pub fn classify(family: Family, path: &str, args: &[String], is_main: bool) -> Kind {
+    if is_main {
         return Kind::Main;
     }
-    if path.contains("gpu-helper") {
-        return Kind::Gpu;
+    match family {
+        Family::Gecko => {
+            if path.contains("gpu-helper") {
+                return Kind::Gpu;
+            }
+            // Web content processes run plugin-container with -isForBrowser
+            // and end their arguments with the process type "tab".
+            let is_browser = args.iter().any(|a| a == "-isForBrowser");
+            if path.contains("plugin-container") && is_browser && args.last().is_some_and(|a| a == "tab") {
+                return Kind::Tab;
+            }
+            Kind::Other
+        }
+        Family::Chromium => {
+            // Helpers say what they are with --type=. Extensions run in
+            // renderers too, marked --extension-process; they aren't tabs.
+            let kind = args.iter().find_map(|a| a.strip_prefix("--type="));
+            match kind {
+                Some("renderer") if !args.iter().any(|a| a == "--extension-process") => Kind::Tab,
+                Some("gpu-process") => Kind::Gpu,
+                _ => Kind::Other,
+            }
+        }
     }
-    // Web content processes run plugin-container with -isForBrowser and end
-    // their arguments with the process type "tab".
-    let is_browser = args.iter().any(|a| a == "-isForBrowser");
-    if path.contains("plugin-container") && is_browser && args.last().is_some_and(|a| a == "tab") {
-        return Kind::Tab;
-    }
-    Kind::Other
 }
 
 /// MB per minute between the oldest and newest sample, once they're at
@@ -399,28 +476,47 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn family(path: &str) -> Option<Family> {
+        browser_app(path).map(|(f, _)| f)
+    }
+
+    const CHROME_RENDERER: &str = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/\
+        Versions/131.0.6778.86/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)";
+
     #[test]
-    fn recognizes_firefox_bundles_anywhere() {
-        assert!(is_firefox_path("/Applications/Firefox.app/Contents/MacOS/firefox"));
-        assert!(is_firefox_path(
-            "/Applications/Firefox.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container"
-        ));
-        assert!(is_firefox_path("/Users/a/Applications/Firefox Nightly.app/Contents/MacOS/firefox"));
-        assert!(is_firefox_path("/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox"));
-        assert!(!is_firefox_path("/Applications/Safari.app/Contents/MacOS/Safari"));
-        assert!(!is_firefox_path("/Applications/Thunderbird.app/Contents/MacOS/thunderbird"));
-        assert!(!is_firefox_path("/usr/bin/firefox"));
-        // A folder named Firefox isn't enough; the bundle itself must be.
-        assert!(!is_firefox_path("/Users/a/Firefox/Other.app/Contents/MacOS/other"));
+    fn recognizes_supported_browsers_anywhere() {
+        use Family::*;
+        assert_eq!(family("/Applications/Firefox.app/Contents/MacOS/firefox"), Some(Gecko));
+        assert_eq!(
+            family("/Applications/Firefox.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container"),
+            Some(Gecko)
+        );
+        assert_eq!(family("/Users/a/Applications/Firefox Nightly.app/Contents/MacOS/firefox"), Some(Gecko));
+        assert_eq!(family("/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox"), Some(Gecko));
+        for app in ["Zen", "Zen Browser", "LibreWolf", "Waterfox", "Floorp", "Mullvad Browser", "Tor Browser"] {
+            assert_eq!(family(&format!("/Applications/{app}.app/Contents/MacOS/x")), Some(Gecko), "{app}");
+        }
+        assert_eq!(family(CHROME_RENDERER), Some(Chromium));
+        for app in ["Google Chrome", "Google Chrome Beta", "Microsoft Edge", "Brave Browser", "Arc", "Vivaldi", "Opera", "Opera GX", "Chromium"] {
+            assert_eq!(family(&format!("/Applications/{app}.app/Contents/MacOS/x")), Some(Chromium), "{app}");
+        }
+        // Not browsers, or not ones Tab Guard supports.
+        for app in ["Safari", "Thunderbird", "Slack", "Visual Studio Code", "Arcade", "Zenly", "Operator"] {
+            assert_eq!(family(&format!("/Applications/{app}.app/Contents/MacOS/x")), None, "{app}");
+        }
+        assert_eq!(family("/usr/bin/firefox"), None);
+        // A folder named Firefox isn't enough; the app itself must be.
+        assert_eq!(family("/Users/a/Firefox/Other.app/Contents/MacOS/other"), None);
     }
 
     #[test]
     fn finds_the_app_and_profile() {
         let nightly = "/Applications/Firefox Nightly.app";
-        assert_eq!(app_bundle(&format!("{nightly}/Contents/MacOS/firefox")), nightly);
+        assert_eq!(app_bundle(&format!("{nightly}/Contents/MacOS/firefox")), Some(nightly));
+        assert_eq!(app_bundle(CHROME_RENDERER), Some("/Applications/Google Chrome.app"), "the outer app, not the helper");
         assert_eq!(
             app_bundle(&format!("{nightly}/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container")),
-            nightly
+            Some(nightly)
         );
         assert_eq!(profile_name(&args(&["firefox", "-P", "work"])), Some("work".into()));
         assert_eq!(profile_name(&args(&["firefox", "-profile", "/Users/a/Profiles/abc.work/"])), Some("abc.work".into()));
@@ -430,7 +526,8 @@ mod tests {
     }
 
     fn member<'a>(pid: u32, kind: Kind, parent: u32, app: &'a str) -> Member<'a> {
-        Member { pid, kind, parent, start: pid as u64, app, profile: None }
+        let family = if app.contains("Chrome") { Family::Chromium } else { Family::Gecko };
+        Member { pid, kind, parent, start: pid as u64, family, app, profile: None }
     }
 
     #[test]
@@ -485,20 +582,55 @@ mod tests {
     }
 
     #[test]
-    fn classifies_process_kinds() {
+    fn classifies_firefox_processes() {
+        let g = |path: &str, a: &[&str]| classify(Family::Gecko, path, &args(a), false);
         let base = "/Applications/Firefox.app/Contents/MacOS";
         let pc = format!("{base}/plugin-container.app/Contents/MacOS/plugin-container");
-        assert_eq!(classify(&format!("{base}/firefox"), &[]), Kind::Main);
-        assert_eq!(
-            classify(&format!("{base}/gpu-helper.app/Contents/MacOS/Firefox GPU Helper"), &[]),
-            Kind::Gpu
-        );
-        assert_eq!(classify(&pc, &args(&["pc", "-isForBrowser", "-prefsHandle", "0:1", "tab"])), Kind::Tab);
+        assert_eq!(classify(Family::Gecko, &format!("{base}/firefox"), &[], true), Kind::Main);
+        assert_eq!(g(&format!("{base}/gpu-helper.app/Contents/MacOS/Firefox GPU Helper"), &[]), Kind::Gpu);
+        assert_eq!(g(&pc, &["pc", "-isForBrowser", "-prefsHandle", "0:1", "tab"]), Kind::Tab);
         // Utility, socket and media processes aren't tabs.
-        assert_eq!(classify(&pc, &args(&["pc", "-appDir", "x", "socket"])), Kind::Other);
-        assert_eq!(classify(&pc, &args(&["pc", "-isForBrowser", "rdd"])), Kind::Other);
-        assert_eq!(classify(&pc, &args(&["pc", "tab"])), Kind::Other);
-        assert_eq!(classify(&format!("{base}/crashhelper"), &[]), Kind::Other);
+        assert_eq!(g(&pc, &["pc", "-appDir", "x", "socket"]), Kind::Other);
+        assert_eq!(g(&pc, &["pc", "-isForBrowser", "rdd"]), Kind::Other);
+        assert_eq!(g(&pc, &["pc", "tab"]), Kind::Other);
+        assert_eq!(g(&format!("{base}/crashhelper"), &[]), Kind::Other);
+    }
+
+    #[test]
+    fn classifies_chrome_processes() {
+        let c = |a: &[&str]| classify(Family::Chromium, CHROME_RENDERER, &args(a), false);
+        let main = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(classify(Family::Chromium, main, &args(&[main]), true), Kind::Main);
+        assert_eq!(c(&["helper", "--type=renderer", "--lang=en-US", "--renderer-client-id=7"]), Kind::Tab);
+        assert_eq!(c(&["helper", "--type=renderer", "--extension-process", "--renderer-client-id=8"]), Kind::Other);
+        assert_eq!(c(&["helper", "--type=gpu-process", "--gpu-preferences=x"]), Kind::Gpu);
+        assert_eq!(c(&["helper", "--type=utility", "--utility-sub-type=network.mojom.NetworkService"]), Kind::Other);
+        assert_eq!(c(&["chrome_crashpad_handler", "--monitor-self"]), Kind::Other);
+    }
+
+    #[test]
+    fn reads_an_apps_main_executable() {
+        assert_eq!(main_executable("/System/Applications/Calculator.app", Family::Gecko), "Calculator");
+        // An app that can't be read falls back to a guess.
+        assert_eq!(main_executable("/nowhere/Firefox.app", Family::Gecko), "firefox");
+        assert_eq!(main_executable("/nowhere/Brave Browser.app", Family::Chromium), "Brave Browser");
+    }
+
+    #[test]
+    fn groups_chrome_with_its_helpers_beside_firefox() {
+        let (fx, chrome) = ("/Applications/Firefox.app", "/Applications/Google Chrome.app");
+        let members = [
+            member(10, Kind::Main, 1, fx),
+            member(11, Kind::Tab, 10, fx),
+            member(30, Kind::Main, 1, chrome),
+            member(31, Kind::Tab, 30, chrome),
+            member(32, Kind::Gpu, 30, chrome),
+        ];
+        let (of, browsers) = group(&members);
+        assert_eq!([of[&11], of[&31], of[&32]], [10, 30, 30]);
+        assert_eq!(browsers[1].name, "Google Chrome");
+        assert_eq!(browsers[1].family, Family::Chromium);
+        assert_eq!(browsers[0].family, Family::Gecko);
     }
 
     fn procargs(argc: i32, exec: &str, pad: usize, argv: &[&str], env: &[&str]) -> Vec<u8> {
@@ -542,10 +674,10 @@ mod tests {
     }
 
     #[test]
-    fn sees_its_own_process_but_not_as_firefox() {
+    fn sees_its_own_process_but_not_as_a_browser() {
         let me = std::process::id();
         let path = pid_path(me).expect("own path");
-        assert!(!is_firefox_path(&path));
+        assert!(browser_app(&path).is_none());
         let ri = rusage(me).expect("own rusage");
         assert!(ri.ri_phys_footprint > 0);
         assert_eq!(parent_pid(me), unsafe { libc::getppid() } as u32);
@@ -566,7 +698,7 @@ mod tests {
         let (procs, browsers) = s.sample();
         let total: u64 = procs.iter().map(|p| p.mem_mb).sum();
         let tabs = procs.iter().filter(|p| p.kind == Kind::Tab).count();
-        println!("{} Firefox processes, {tabs} tabs, {total} MB", procs.len());
+        println!("{} browser processes, {tabs} tabs, {total} MB", procs.len());
         for b in &browsers {
             let n = procs.iter().filter(|p| p.browser == b.id).count();
             println!("{} ({}): {n} processes, {}", b.name, b.id, b.app);

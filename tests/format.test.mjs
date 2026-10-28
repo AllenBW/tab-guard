@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc,
-  keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices,
+  keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices, headline, whichSite,
 } from "../src/format.js";
 
 const config = {
@@ -142,13 +142,13 @@ test("the process filter", () => {
   assert.equal(keptFilter(10, [fx]), null, "no filter with one Firefox");
 });
 
-test("row labels say which Firefox only when several run", () => {
+test("row labels say which browser only when several run", () => {
   const tab = { pid: 7, kind: "tab", browser: 20, mem_mb: 1536 };
   assert.deepEqual(rowBadges(tab, names, false), [{ text: "Tab" }]);
   assert.deepEqual(rowBadges(tab, names, true), [{ text: "Tab" }, { text: "Developer Edition", browser: true }]);
   assert.deepEqual(rowBadges({ ...tab, kind: "main" }, names, true), [{ text: "Developer Edition" }]);
-  assert.deepEqual(rowBadges({ ...tab, kind: "main" }, names, false), [{ text: "Firefox" }]);
-  assert.deepEqual(rowBadges({ ...tab, browser: 99 }, names, true)[1].text, "Firefox", "an unknown copy reads as Firefox");
+  assert.deepEqual(rowBadges({ ...tab, kind: "main" }, names, false), [{ text: "Developer Edition" }], "a main process is named after its browser");
+  assert.deepEqual(rowBadges({ ...tab, browser: 99 }, names, true)[1].text, "Browser", "an unknown browser reads as Browser");
   assert.equal(tabLabel(tab, names, false), "tab process 7 (1.5 GB)");
   assert.equal(tabLabel(tab, names, true), "Firefox Developer Edition tab process 7 (1.5 GB)");
 });
@@ -170,5 +170,26 @@ test("the Limits for picker", () => {
   assert.deepEqual(limitChoices([release, t("/A/Firefox Nightly.app", "Firefox Nightly", false, true)]), [
     ["/A/Firefox.app", "Firefox", ""],
     ["/A/Firefox Nightly.app", "Nightly (not running)", "not-running"],
+  ]);
+});
+
+test("the headline names the browser, or says browsers", () => {
+  const s = { total_mb: 9216, tab_count: 21 };
+  assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }] }), "Firefox is using 9.0 GB across 21 tab processes");
+  assert.equal(headline({ ...s, browsers: [{ name: "Google Chrome" }] }), "Google Chrome is using 9.0 GB across 21 tab processes");
+  assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }, { name: "Google Chrome" }] }), "Your browsers are using 9.0 GB across 21 tab processes");
+});
+
+test("which site is which: about:processes for Firefox, the Task Manager for Chrome", () => {
+  const firefox = { id: 1, name: "Firefox", family: "gecko" };
+  const chrome = { id: 2, name: "Google Chrome", family: "chromium" };
+  assert.deepEqual(whichSite([firefox]).buttons, [{ id: 1, label: "Which site is which? Open about:processes", aria: "Which site is which? Open about:processes" }]);
+  assert.equal(whichSite([chrome]).buttons[0].label, "Which site is which? Open its Task Manager");
+  assert.equal(whichSite([]).buttons[0].id, null);
+  const both = whichSite([firefox, chrome]);
+  assert.equal(both.intro, "Which site is which? Open");
+  assert.deepEqual(both.buttons.map((b) => [b.label, b.aria]), [
+    ["Firefox", "Open about:processes in Firefox"],
+    ["Google Chrome", "Show the Task Manager in Google Chrome"],
   ]);
 });

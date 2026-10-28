@@ -5,7 +5,7 @@
 
 use crate::config::{Config, Mode};
 use crate::engine::{self, gb, Row, Status};
-use crate::sampler::{Browser, Kind, Proc};
+use crate::sampler::{Browser, Family, Kind, Proc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write as _;
@@ -23,11 +23,12 @@ pub struct Event {
     pub text: String,
 }
 
-/// One running copy of Firefox, for the window and the menu bar.
+/// One running browser, for the window and the menu bar.
 #[derive(Debug, Clone, Serialize)]
 pub struct BrowserSummary {
     pub id: u32,
     pub name: String,
+    pub family: Family,
     /// The app bundle, for opening about:processes in the right one.
     #[serde(skip)]
     pub app: String,
@@ -37,7 +38,7 @@ pub struct BrowserSummary {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
-    pub firefox_running: bool,
+    pub browser_running: bool,
     /// Every copy of Firefox together.
     pub total_mb: u64,
     pub tab_count: usize,
@@ -396,7 +397,7 @@ impl Guard {
             .filter_map(|b| self.limits.get(&b.id)?.hold.as_ref().map(|(_, text)| text.as_str()))
             .collect();
         self.snapshot = Snapshot {
-            firefox_running: !procs.is_empty(),
+            browser_running: !procs.is_empty(),
             total_mb: eval.total_mb,
             tab_count: tabs.clone().count(),
             flagged: tabs.clone().filter(|r| r.status == Status::Warn).count(),
@@ -406,6 +407,7 @@ impl Guard {
                 .map(|b| BrowserSummary {
                     id: b.id,
                     name: b.name.clone(),
+                    family: b.family,
                     app: b.app.clone(),
                     total_mb: totals.get(&b.id).copied().unwrap_or(0),
                     tab_count: eval.rows.iter().filter(is_tab).filter(|r| r.proc.browser == b.id).count(),
@@ -428,7 +430,7 @@ impl Guard {
             .iter()
             .find(|r| r.proc.pid == pid && r.proc.kind == Kind::Tab)
             .cloned()
-            .ok_or("That tab process is gone, or isn't a Firefox tab")?;
+            .ok_or("That tab process is gone, or isn't a browser tab")?;
         close(pid);
         let name = self.tab_name(row.proc.browser, pid);
         self.push_event("closed", format!("You closed {name} ({})", gb(row.proc.mem_mb)));
@@ -482,7 +484,8 @@ mod tests {
 
     fn browser(id: u32, name: &str) -> Browser {
         let app = format!("/Applications/{name}.app");
-        Browser { id, name: name.into(), key: app.clone(), app }
+        let family = if name.contains("Chrome") { Family::Chromium } else { Family::Gecko };
+        Browser { id, name: name.into(), family, key: app.clone(), app }
     }
 
     /// The one Firefox most tests run with.
@@ -603,7 +606,7 @@ mod tests {
     fn no_firefox_means_empty_snapshot() {
         let mut g = guard(Mode::Close);
         run(&mut g, &[], Instant::now());
-        assert!(!g.snapshot.firefox_running);
+        assert!(!g.snapshot.browser_running);
         assert_eq!(g.snapshot.total_mb, 0);
         assert!(g.events().next().is_none());
     }

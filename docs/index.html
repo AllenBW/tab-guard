@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tab Guard</title>
-  <meta name="description" content="A free Mac menu-bar app that keeps Firefox tabs from eating your memory." />
+  <meta name="description" content="A free Mac menu-bar app that stops runaway browser tabs from eating your memory." />
   <link rel="icon" href="icon.png" />
   <style>
     :root {
@@ -44,7 +44,7 @@
       <img src="icon.png" alt="" />
       <div>
         <h1>Tab Guard</h1>
-        <p class="lede">Keeps Firefox tabs from eating your Mac's memory. Free and open source.</p>
+        <p class="lede">Stops runaway browser tabs from eating your Mac's memory. Free and open source.</p>
       </div>
     </header>
 
@@ -54,19 +54,33 @@
     </div>
 
     <p>
-      One runaway tab can push Firefox past 10 GB and send your Mac into swap. macOS has no way to cap an
-      app's memory, so Tab Guard watches instead: it sits in the menu bar, checks Firefox's tab processes,
-      and, if you let it, closes the one that grew past your limit. Firefox shows that tab as crashed, with
-      a <b>Restore</b> button that brings it back.
+      A badly behaved website shouldn't be able to run amok with your computer. One runaway tab can grow to
+      gigabytes and send your Mac into swap, and finding and closing it by hand is tedious. macOS has no way
+      to cap an app's memory, so Tab Guard watches instead: it sits in the menu bar, checks your browser's
+      tab processes, and, if you let it, closes the one that grew past your limit. The browser shows that
+      tab as crashed, with a button that brings it back.
+    </p>
+    <p class="muted">
+      Works with Firefox and browsers built on it (Zen, LibreWolf, Waterfox, Floorp and more) and with
+      Chrome and its relatives (Edge, Brave, Arc, Vivaldi, Opera).
     </p>
 
     <h2>How it works</h2>
     <div class="grid">
       <div class="card"><h3>Watch first</h3><p>It starts in Watch only: it shows what it would close and why, and closes nothing until you pick a mode.</p></div>
-      <div class="card"><h3>Your limits</h3><p>A per-tab limit (2 GB by default) and a whole-browser limit (8 GB) that prefers idle tabs and never picks small ones. Running Nightly or Developer Edition too? Each copy of Firefox gets its own total.</p></div>
-      <div class="card"><h3>Knows when to stop</h3><p>If closing a tab doesn't bring Firefox down, it backs off, and it never closes more than a few tabs an hour.</p></div>
+      <div class="card"><h3>Your limits</h3><p>A per-tab limit (2 GB by default) and a whole-browser limit (8 GB) that prefers idle tabs and never picks small ones. Running more than one browser? Each gets its own limits.</p></div>
+      <div class="card"><h3>Knows when to stop</h3><p>If closing a tab doesn't bring the browser down, it backs off, and it never closes more than a few tabs an hour.</p></div>
       <div class="card"><h3>Stays out of the way</h3><p>About 16 MB of memory and no noticeable CPU. Turn it off or change modes from the menu bar.</p></div>
     </div>
+
+    <h2>Before you turn on closing</h2>
+    <p>
+      Closing a tab is abrupt: it just shows as crashed, and anything unsaved in it is gone. Keep Tab Guard in
+      Watch only, or pause it from the menu bar, while you're on a call, presenting, or doing work you can't
+      lose. It judges by memory alone, and can't tell which website a process is. The
+      <a href="https://github.com/AllenBW/tab-guard#limitations-read-before-turning-on-closing">README</a>
+      lists every limitation.
+    </p>
 
     <h2>Privacy</h2>
     <p>

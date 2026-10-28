@@ -3,6 +3,8 @@
 
 use crate::config::{Config, Limits, Mode};
 use crate::sampler::{Browser, Kind, Proc};
+#[cfg(test)]
+use crate::sampler::Family;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -158,7 +160,8 @@ mod tests {
 
     fn browser(id: u32, name: &str) -> Browser {
         let app = format!("/Applications/{name}.app");
-        Browser { id, name: name.into(), key: app.clone(), app }
+        let family = if name.contains("Chrome") { Family::Chromium } else { Family::Gecko };
+        Browser { id, name: name.into(), family, key: app.clone(), app }
     }
 
     /// One copy of Firefox (id 0), held or not.

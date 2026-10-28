@@ -1,5 +1,6 @@
-//! Tab Guard: a menu-bar app that watches Firefox's tab processes and closes
-//! the ones that grow past your limits.
+//! Tab Guard: a menu-bar app that watches browsers' tab processes (Firefox
+//! and Chrome, and the browsers built on them) and closes the ones that grow
+//! past your limits.
 
 mod config;
 mod engine;
@@ -35,8 +36,8 @@ impl Shared {
     }
 }
 
-/// Ask a tab process to quit, then force it if it's still there. Firefox
-/// shows the tab as crashed, with a Restore button.
+/// Ask a tab process to quit, then force it if it's still there. The
+/// browser shows the tab as crashed, with a button to reload it.
 fn close_process(pid: u32) {
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     std::thread::spawn(move || {
@@ -68,14 +69,15 @@ struct TrayItems {
 
 /// The menu-bar title and the two status lines in its menu.
 fn tray_text(cfg: &Config, snap: &Snapshot) -> (Option<String>, String, String) {
-    if !snap.firefox_running {
+    if !snap.browser_running {
         let title = (!cfg.enabled).then(|| "Paused".to_string());
-        return (title, "Firefox isn't running".into(), format!("Mode: {}", cfg.mode.label()));
+        return (title, "No browser is running".into(), format!("Mode: {}", cfg.mode.label()));
     }
-    // "Firefox: 9.2 GB", or "Firefox 7.1 GB · Firefox Nightly 2.3 GB".
+    // "Firefox: 9.2 GB", or "Firefox 7.1 GB · Google Chrome 2.3 GB".
     let sizes = match snap.browsers.as_slice() {
-        [_, _, ..] => snap.browsers.iter().map(|b| format!("{} {}", b.name, gb(b.total_mb))).collect::<Vec<_>>().join(" · "),
-        _ => format!("Firefox: {}", gb(snap.total_mb)),
+        [one] => format!("{}: {}", one.name, gb(snap.total_mb)),
+        [] => format!("Browsers: {}", gb(snap.total_mb)),
+        _ => snap.browsers.iter().map(|b| format!("{} {}", b.name, gb(b.total_mb))).collect::<Vec<_>>().join(" · "),
     };
     let summary = format!("{sizes} · {} tab processes", snap.tab_count);
     let detail = match (snap.over, snap.flagged) {
@@ -113,7 +115,7 @@ impl TrayItems {
 }
 
 fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
-    let summary = MenuItem::with_id(app, "summary", "Checking Firefox…", false, None::<&str>)?;
+    let summary = MenuItem::with_id(app, "summary", "Checking your browsers…", false, None::<&str>)?;
     let detail = MenuItem::with_id(app, "detail", "", false, None::<&str>)?;
     let enabled = CheckMenuItem::with_id(app, "enabled", "Tab Guard On", true, cfg.enabled, None::<&str>)?;
     let modes: Vec<(Mode, CheckMenuItem<tauri::Wry>)> = [Mode::Watch, Mode::WarnThenClose, Mode::Close]
@@ -241,7 +243,7 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
         }
         if let (Some(c), true) = (&closed, cfg.notify_on_close) {
             notify(&format!(
-                "Closed a {} tab using {}. Click Restore on the crashed tab to reload it.",
+                "Closed a {} tab using {}. Reload it from the crashed tab when you need it.",
                 c.browser,
                 gb(c.mem_mb)
             ));
@@ -359,19 +361,43 @@ fn open_link(name: String) -> Result<(), String> {
     std::process::Command::new("open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Firefox's own page that names the site in each process. `open` can't do
-/// this (it doesn't know the about: scheme), so ask Firefox directly over
-/// Apple Events, and put the address on the clipboard as a fallback. With
-/// several copies running, `browser` says which one (by its app, so two
-/// profiles of the same app can't be told apart). Async so the wait runs off
-/// the main thread.
+/// Where a browser shows which site is in which process: Firefox's
+/// about:processes page, or the Task Manager in Chrome-family browsers.
+/// `browser` says which browser (by its app, so two profiles of the same app
+/// can't be told apart). Async so the wait runs off the main thread.
 #[tauri::command]
 async fn open_about_processes(browser: Option<u32>, shared: State<'_, Arc<Shared>>) -> Result<String, String> {
-    let (app, name) = {
+    let (app, name, family) = {
         let g = shared.guard.lock().unwrap();
         let b = g.snapshot.browsers.iter().find(|b| Some(b.id) == browser).or(g.snapshot.browsers.first());
-        b.map_or(("Firefox".to_string(), "Firefox".to_string()), |b| (b.app.clone(), b.name.clone()))
+        let b = b.ok_or("No browser is running")?;
+        (b.app.clone(), b.name.clone(), b.family)
     };
+    match family {
+        sampler::Family::Gecko => Ok(open_gecko_processes_page(&app, &name)),
+        sampler::Family::Chromium => {
+            // Chrome won't open its internal pages for other apps, and its
+            // Task Manager has no address, so bring it forward and say where.
+            let _ = run_with_timeout(std::process::Command::new("open").args(["-a", &app]), Duration::from_secs(5));
+            Ok(task_manager_hint(&name))
+        }
+    }
+}
+
+/// Where to find the Task Manager in a Chrome-family browser. Chrome keeps
+/// it under Window; the others move it around, so they get a general hint.
+fn task_manager_hint(name: &str) -> String {
+    if name.starts_with("Google Chrome") || name.starts_with("Chromium") {
+        format!("In {name}, choose Window › Task Manager. It lists each tab with its process ID.")
+    } else {
+        format!("Open {name}'s Task Manager (in Chrome it's Window › Task Manager). It lists each tab with its process ID.")
+    }
+}
+
+/// Ask a Firefox-family browser over Apple Events to open about:processes,
+/// with the address on the clipboard as a fallback (`open` doesn't know the
+/// about: scheme).
+fn open_gecko_processes_page(app: &str, name: &str) -> String {
     let tell = format!("tell application \"{}\"", app.replace(['\\', '"'], ""));
     let mut pbcopy = std::process::Command::new("pbcopy");
     pbcopy.stdin(std::process::Stdio::piped());
@@ -400,10 +426,10 @@ async fn open_about_processes(browser: Option<u32>, shared: State<'_, Arc<Shared
         Duration::from_secs(7),
     );
     if asked {
-        Ok(format!("Asked {name} to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard."))
+        format!("Asked {name} to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.")
     } else {
-        let _ = run_with_timeout(std::process::Command::new("open").args(["-a", &app]), Duration::from_secs(5));
-        Ok(format!("{name} didn't accept the request. The address is on your clipboard: in {name} press ⌘L, then ⌘V and Return."))
+        let _ = run_with_timeout(std::process::Command::new("open").args(["-a", app]), Duration::from_secs(5));
+        format!("{name} didn't accept the request. The address is on your clipboard: in {name} press ⌘L, then ⌘V and Return.")
     }
 }
 
@@ -604,7 +630,7 @@ mod tests {
     use crate::engine::Row;
 
     fn snap(total_mb: u64, over: usize, flagged: usize) -> Snapshot {
-        Snapshot { firefox_running: true, total_mb, tab_count: 20, over, flagged, rows: Vec::<Row>::new(), ..Default::default() }
+        Snapshot { browser_running: true, total_mb, tab_count: 20, over, flagged, rows: Vec::<Row>::new(), ..Default::default() }
     }
 
     #[test]
@@ -679,6 +705,7 @@ mod tests {
         let b = |id, name: &str, total_mb| crate::guard::BrowserSummary {
             id,
             name: name.into(),
+            family: sampler::Family::Gecko,
             app: String::new(),
             total_mb,
             tab_count: 0,
@@ -691,11 +718,20 @@ mod tests {
     }
 
     #[test]
-    fn tray_without_firefox() {
+    fn task_manager_hints_are_specific_where_its_known() {
+        assert_eq!(
+            task_manager_hint("Google Chrome"),
+            "In Google Chrome, choose Window › Task Manager. It lists each tab with its process ID."
+        );
+        assert!(task_manager_hint("Brave Browser").starts_with("Open Brave Browser's Task Manager"));
+    }
+
+    #[test]
+    fn tray_without_a_browser() {
         let none = Snapshot::default();
         let (title, summary, _) = tray_text(&Config::default(), &none);
         assert_eq!(title, None);
-        assert_eq!(summary, "Firefox isn't running");
+        assert_eq!(summary, "No browser is running");
     }
 
     #[test]
