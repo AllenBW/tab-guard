@@ -58,9 +58,75 @@ fn notify(text: &str) {
 
 // ---------------------------------------------------------------- tray menu
 
+/// What the menu-bar shield's color says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayState {
+    /// Tab Guard is turned off: gray.
+    Off,
+    /// Watch only, nothing to look at: the plain menu-bar icon.
+    Watching,
+    /// A closing mode, everything within limits: green.
+    Guarding,
+    /// Worth a look: tabs past the warning level, a tab Watch only would
+    /// close, or the whole-browser limit paused: orange.
+    Attention,
+    /// Closing a tab that's over a limit: red.
+    Closing,
+}
+
+impl TrayState {
+    /// The shield's color, or None for the plain icon that follows the menu bar's.
+    fn color(self) -> Option<[u8; 3]> {
+        match self {
+            TrayState::Off => Some([142, 142, 147]),
+            TrayState::Watching => None,
+            TrayState::Guarding => Some([48, 209, 88]),
+            TrayState::Attention => Some([255, 159, 10]),
+            TrayState::Closing => Some([255, 69, 58]),
+        }
+    }
+
+    /// The same, as a dot in front of the menu's status line.
+    fn dot(self) -> &'static str {
+        match self {
+            TrayState::Off => "⏸",
+            TrayState::Watching => "⚪️",
+            TrayState::Guarding => "🟢",
+            TrayState::Attention => "🟠",
+            TrayState::Closing => "🔴",
+        }
+    }
+}
+
+fn tray_state(cfg: &Config, snap: &Snapshot) -> TrayState {
+    let closes = cfg.mode.closes();
+    if !cfg.enabled {
+        TrayState::Off
+    } else if snap.over > 0 && closes {
+        TrayState::Closing
+    } else if snap.over > 0 || snap.flagged > 0 || (closes && snap.total_hold.is_some()) {
+        TrayState::Attention
+    } else if closes {
+        TrayState::Guarding
+    } else {
+        TrayState::Watching
+    }
+}
+
+/// The menu-bar icon (black plus transparency) in one color.
+fn tinted(base: &Image<'_>, [r, g, b]: [u8; 3]) -> Image<'static> {
+    let mut rgba = base.rgba().to_vec();
+    for px in rgba.chunks_exact_mut(4) {
+        px[..3].copy_from_slice(&[r, g, b]);
+    }
+    Image::new_owned(rgba, base.width(), base.height())
+}
+
 #[derive(Clone)]
 struct TrayItems {
     tray: TrayIcon,
+    /// The plain icon, to tint for each state.
+    icon: Image<'static>,
     summary: MenuItem<tauri::Wry>,
     detail: MenuItem<tauri::Wry>,
     enabled: CheckMenuItem<tauri::Wry>,
@@ -104,6 +170,14 @@ fn tray_text(cfg: &Config, snap: &Snapshot) -> (Option<String>, String, String) 
 impl TrayItems {
     fn refresh(&self, cfg: &Config, snap: &Snapshot) {
         let (title, summary, detail) = tray_text(cfg, snap);
+        let state = tray_state(cfg, snap);
+        let detail = format!("{} {detail}", state.dot());
+        let _ = match state.color() {
+            Some(color) => self.tray.set_icon(Some(tinted(&self.icon, color))),
+            None => self.tray.set_icon(Some(self.icon.clone())),
+        };
+        // Set after the icon: a plain one follows the menu bar's light or dark.
+        let _ = self.tray.set_icon_as_template(state.color().is_none());
         let _ = self.enabled.set_checked(cfg.enabled);
         for (mode, item) in &self.modes {
             let _ = item.set_checked(*mode == cfg.mode);
@@ -137,9 +211,9 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
         &[&summary, &detail, &sep()?, &enabled, &mode_menu, &sep()?, &open, &about, &sep()?, &quit],
     )?;
 
-    let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?.to_owned();
     let tray = TrayIconBuilder::with_id("tab-guard")
-        .icon(icon)
+        .icon(icon.clone())
         .icon_as_template(true)
         .tooltip("Tab Guard")
         .menu(&menu)
@@ -163,7 +237,9 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
         })
         .build(app)?;
 
-    Ok(TrayItems { tray, summary, detail, enabled, modes })
+    let items = TrayItems { tray, icon, summary, detail, enabled, modes };
+    items.refresh(cfg, &Snapshot::default());
+    Ok(items)
 }
 
 const MIN_HEIGHT: f64 = 480.0;
@@ -230,7 +306,7 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     // which tabs are idle.
     sampler.sample();
     std::thread::sleep(Duration::from_secs(1));
-    let mut last_tray: Option<(Option<String>, String, String)> = None;
+    let mut last_tray: Option<((Option<String>, String, String), TrayState)> = None;
     loop {
         let (procs, browsers) = sampler.sample();
         let (cfg, snap, closed, counted) = {
@@ -253,7 +329,7 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
         // thread takes `guard` to answer the window's commands. Making them
         // while holding `guard` deadlocks the app, so they come after. Skip
         // them entirely when nothing visible changed.
-        let text = tray_text(&cfg, &snap);
+        let text = (tray_text(&cfg, &snap), tray_state(&cfg, &snap));
         if last_tray.as_ref() != Some(&text) {
             if let Some(items) = app.try_state::<TrayItems>() {
                 items.refresh(&cfg, &snap);
@@ -651,6 +727,40 @@ mod tests {
         assert_eq!(tray_text(&cfg, &snap(9216, 1, 0)).0.as_deref(), Some("⚠︎ 9.0G"));
         let paused = Config { enabled: false, ..Config::default() };
         assert_eq!(tray_text(&paused, &snap(9216, 1, 0)).0.as_deref(), Some("Paused"));
+    }
+
+    #[test]
+    fn the_shield_is_colored_by_state() {
+        use TrayState::*;
+        let watch = Config::default();
+        let close = Config { mode: Mode::Close, ..Config::default() };
+        let off = Config { enabled: false, ..close.clone() };
+        let held = Snapshot { total_hold: Some("paused".into()), ..snap(9216, 0, 0) };
+        let cases = [
+            (&off, snap(1, 2, 0), Off),
+            (&watch, snap(1, 0, 0), Watching),
+            (&watch, snap(1, 0, 1), Attention),
+            (&watch, snap(1, 1, 0), Attention),
+            (&watch, held.clone(), Watching),
+            (&close, snap(1, 0, 0), Guarding),
+            (&close, snap(1, 0, 2), Attention),
+            (&close, held, Attention),
+            (&close, snap(1, 1, 0), Closing),
+            (&close, Snapshot::default(), Guarding),
+        ];
+        for (cfg, s, want) in cases {
+            assert_eq!(tray_state(cfg, &s), want, "{:?} over {} flagged {}", cfg.mode, s.over, s.flagged);
+        }
+        assert_eq!(Watching.color(), None, "the plain icon follows the menu bar");
+        assert!([Off, Guarding, Attention, Closing].iter().all(|s| s.color().is_some()));
+    }
+
+    #[test]
+    fn tinting_keeps_the_shape() {
+        let base = Image::new_owned(vec![0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 128], 3, 1);
+        let red = tinted(&base, [255, 69, 58]);
+        assert_eq!(red.rgba(), [255, 69, 58, 255, 255, 69, 58, 0, 255, 69, 58, 128]);
+        assert_eq!((red.width(), red.height()), (3, 1));
     }
 
     #[test]

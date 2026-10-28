@@ -38,7 +38,7 @@ release a minute after it starts and every 6 hours. That request is an ordinary 
 github.com and includes no information about you or your browsers. Each update is
 signature-checked before it's installed.
 
-## Controlling Firefox
+## Controlling your browser
 
 macOS asks once whether Tab Guard may control Firefox (or another Firefox-based browser). That
 permission is only used by the **Which site is which?** button, to ask the browser to open its
