@@ -14,26 +14,28 @@
         <p id="subline" class="muted"></p>
       </div>
       <label class="switch" title="Turn Tab Guard on or off">
-        <input type="checkbox" id="enabled" />
+        <input type="checkbox" id="enabled" role="switch" />
         <span class="track"><span class="thumb"></span></span>
         <span id="enabled-label">On</span>
       </label>
     </header>
 
     <section class="mode">
-      <div class="segmented" role="radiogroup" aria-label="Mode">
-        <button role="radio" data-mode="watch">Watch only</button>
-        <button role="radio" data-mode="warn-then-close">Warn, then close</button>
-        <button role="radio" data-mode="close">Close at limit</button>
+      <div class="segmented" role="radiogroup" aria-label="Mode" aria-describedby="mode-help">
+        <button type="button" role="radio" data-mode="watch">Watch only</button>
+        <button type="button" role="radio" data-mode="warn-then-close">Warn, then close</button>
+        <button type="button" role="radio" data-mode="close">Close at limit</button>
       </div>
       <p id="mode-help" class="muted"></p>
     </section>
 
     <div id="banner" class="banner" hidden></div>
     <div id="toast" class="toast" role="status" hidden></div>
+    <!-- Announcements for screen readers only. -->
+    <div id="sr-status" class="visually-hidden" role="status" aria-live="polite"></div>
 
-    <section id="welcome" class="welcome" hidden>
-      <h2>Welcome to Tab Guard</h2>
+    <section id="welcome" class="welcome" aria-labelledby="welcome-title" hidden>
+      <h2 id="welcome-title">Welcome to Tab Guard</h2>
       <p>
         Tab Guard watches Firefox's tab processes from the menu bar. When one grows past your limits it can
         close it, and Firefox shows that tab as crashed with a <b>Restore</b> button. New installs start in
@@ -50,29 +52,31 @@
       <button id="welcome-done" class="primary">Got it</button>
     </section>
 
-    <nav class="tabs" role="tablist">
-      <button role="tab" data-panel="processes" aria-selected="true">Processes</button>
-      <button role="tab" data-panel="settings">Limits &amp; settings</button>
-      <button role="tab" data-panel="activity">Activity <span id="activity-count" class="count"></span></button>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" role="tab" id="tab-processes" aria-controls="processes" data-panel="processes" aria-selected="true">Processes</button>
+      <button type="button" role="tab" id="tab-settings" aria-controls="settings" data-panel="settings">Limits &amp; settings</button>
+      <button type="button" role="tab" id="tab-activity" aria-controls="activity" data-panel="activity">Activity <span id="activity-count" class="count"></span></button>
+      <button type="button" role="tab" id="tab-about" aria-controls="about" data-panel="about">About</button>
     </nav>
 
     <main>
-      <section id="processes" class="panel">
+      <section id="processes" class="panel" role="tabpanel" aria-labelledby="tab-processes">
         <div class="panel-bar">
           <span id="checked" class="muted"></span>
           <span class="spacer"></span>
           <button id="about-processes" class="link">Which site is which? Open about:processes</button>
         </div>
         <table>
+          <caption class="visually-hidden">Firefox processes, biggest first</caption>
           <thead>
             <tr>
-              <th>Process</th>
-              <th class="mem-col">Memory</th>
-              <th class="num">Growth</th>
-              <th class="num">CPU</th>
-              <th class="num">Running</th>
-              <th>Status</th>
-              <th></th>
+              <th scope="col">Process</th>
+              <th scope="col" class="mem-col">Memory</th>
+              <th scope="col" class="num">Growth</th>
+              <th scope="col" class="num">CPU</th>
+              <th scope="col" class="num age-col">Running</th>
+              <th scope="col" class="status-col">Status</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
@@ -83,7 +87,7 @@
         </p>
       </section>
 
-      <section id="settings" class="panel" hidden>
+      <section id="settings" class="panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
         <form id="settings-form" class="settings">
           <fieldset>
             <legend>Per-tab limits</legend>
@@ -128,16 +132,40 @@
           <fieldset>
             <legend>Updates</legend>
             <label class="check"><input type="checkbox" name="auto_update" /> Install updates automatically</label>
-            <div class="field"><span id="version"></span>
-              <button type="button" id="check-updates">Check for updates</button></div>
-            <small id="update-status"></small>
+            <small>Your version and a manual check are under About.</small>
           </fieldset>
           <p id="saved" class="muted small" aria-live="polite"></p>
         </form>
       </section>
 
-      <section id="activity" class="panel" hidden>
-        <ul id="events" class="events"></ul>
+      <section id="about" class="panel" role="tabpanel" aria-labelledby="tab-about" hidden>
+        <div class="about">
+          <img src="icon.png" alt="" width="80" height="80" />
+          <div class="about-body">
+            <h2>Tab Guard</h2>
+            <p class="muted"><span id="version"></span></p>
+            <p>Keeps Firefox tabs from eating your Mac's memory. Free and open source under the MIT license.</p>
+            <div class="about-update">
+              <button type="button" id="check-updates">Check for updates</button>
+              <small id="update-status" class="muted"></small>
+            </div>
+            <p class="about-links">
+              <button class="link" data-link="changelog">What's new</button>
+              <button class="link" data-link="project">Project page</button>
+              <button class="link" data-link="source">Source code</button>
+              <button class="link" data-link="privacy">Privacy</button>
+              <button class="link" data-link="issues">Report a problem</button>
+            </p>
+            <p class="credit muted small">
+              Made by Allen Manzano-Wight. Need a break from your tabs?
+              <button class="link inline" data-link="walk">Take a walk.</button>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="activity" class="panel" role="tabpanel" aria-labelledby="tab-activity" hidden>
+        <ul id="events" class="events" aria-label="Activity, newest first"></ul>
         <p class="muted small">Also written to <code id="log-path"></code></p>
       </section>
     </main>
