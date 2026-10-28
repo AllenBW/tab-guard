@@ -185,6 +185,8 @@ tr:last-child td { border-bottom: none; }
   background: var(--badge); color: var(--text); margin-left: 6px;
 }
 .proc { white-space: nowrap; }
+.kind.browser { background: none; border: 1px solid var(--border); color: var(--muted); }
+.about-processes { color: var(--muted); }
 .status-col { min-width: 150px; }
 .pid { font-variant-numeric: tabular-nums; }
 
@@ -214,6 +216,7 @@ tr.spared .pill { background: var(--spared-soft); color: var(--spared); }
   .mem .bar, .age-col { display: none; }
   .mem-col { width: auto; }
   th, td { padding: 7px 8px; }
+  .status-col { min-width: 130px; }
 }
 
 /* Three columns, with the long whole-browser group spread over two of them,

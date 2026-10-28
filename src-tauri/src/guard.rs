@@ -1,13 +1,13 @@
 //! Tab Guard's state between checks: settings, spared tabs, the activity
-//! log, the cooldown, and the whole-browser limit's back-off. `pass` runs one
-//! check's bookkeeping. Nothing here
-//! touches Tauri, so it can be tested directly.
+//! log, the cooldown, and the whole-browser limit's back-off for each copy of
+//! Firefox. `pass` runs one check's bookkeeping. Nothing here touches Tauri,
+//! so it can be tested directly.
 
 use crate::config::{Config, Mode};
 use crate::engine::{self, gb, Row, Status};
-use crate::sampler::{Kind, Proc};
+use crate::sampler::{Browser, Kind, Proc};
 use serde::Serialize;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -23,17 +23,33 @@ pub struct Event {
     pub text: String,
 }
 
+/// One running copy of Firefox, for the window and the menu bar.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowserSummary {
+    pub id: u32,
+    pub name: String,
+    /// The app bundle, for opening about:processes in the right one.
+    #[serde(skip)]
+    pub app: String,
+    pub total_mb: u64,
+    pub tab_count: usize,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
     pub firefox_running: bool,
+    /// Every copy of Firefox together.
     pub total_mb: u64,
     pub tab_count: usize,
     pub flagged: usize,
     pub over: usize,
     pub rows: Vec<Row>,
+    /// The copies of Firefox running, oldest first. Usually just one.
+    pub browsers: Vec<BrowserSummary>,
     /// Seconds until another close is allowed, if a cooldown is running.
     pub cooldown_secs: u64,
-    /// Why the whole-browser limit is paused, and until when, if it is.
+    /// Why the whole-browser limit is paused, and until when, if it is (for
+    /// any copy of Firefox).
     pub total_hold: Option<String>,
     pub checked_at: u64,
 }
@@ -63,6 +79,20 @@ pub enum Usage {
 pub struct Closed {
     pub pid: u32,
     pub mem_mb: u64,
+    /// The name of the Firefox it belonged to.
+    pub browser: String,
+}
+
+/// The whole-browser limit's state for one copy of Firefox.
+#[derive(Default)]
+struct TotalLimit {
+    /// When each close for this limit in the last hour happened.
+    closes: VecDeque<Instant>,
+    /// The latest close, still to be judged: (when, this Firefox's total just
+    /// before, the tab's size).
+    unjudged: Option<(Instant, u64, u64)>,
+    /// Paused until then; the text says why.
+    hold: Option<(Instant, String)>,
 }
 
 pub struct Guard {
@@ -76,13 +106,10 @@ pub struct Guard {
     /// (pid, status) pairs already written to the activity log.
     logged: HashSet<(u32, Status)>,
     last_close: Option<Instant>,
-    /// When each close for the whole-browser limit in the last hour happened.
-    total_closes: VecDeque<Instant>,
-    /// The latest close for the whole-browser limit, still to be judged:
-    /// (when, Firefox's total just before, the tab's size).
-    unjudged: Option<(Instant, u64, u64)>,
-    /// The whole-browser limit is paused until then; the text says why.
-    total_hold: Option<(Instant, String)>,
+    /// The whole-browser limit, for each copy of Firefox by browser id.
+    limits: HashMap<u32, TotalLimit>,
+    /// The copies of Firefox seen in the latest check.
+    browsers: Vec<Browser>,
     /// Usage not yet sent.
     usage: Vec<Usage>,
     pub snapshot: Snapshot,
@@ -118,9 +145,8 @@ impl Guard {
             events: VecDeque::new(),
             logged: HashSet::new(),
             last_close: None,
-            total_closes: VecDeque::new(),
-            unjudged: None,
-            total_hold: None,
+            limits: HashMap::new(),
+            browsers: Vec::new(),
             usage: Vec::new(),
             snapshot: Snapshot::default(),
         }
@@ -172,11 +198,15 @@ impl Guard {
         // stays, so the cap still holds.
         let total_changed = (old.total_mb, old.total_backoff_mins, old.total_max_per_hour)
             != (cfg.total_mb, cfg.total_backoff_mins, cfg.total_max_per_hour);
-        if total_changed && self.total_hold.take().is_some() {
-            self.push_event("info", "The whole-browser limit is back on, with your new settings".into());
-        }
         if total_changed {
-            self.unjudged = None;
+            let mut ended = false;
+            for lim in self.limits.values_mut() {
+                ended |= lim.hold.take().is_some();
+                lim.unjudged = None;
+            }
+            if ended {
+                self.push_event("info", "The whole-browser limit is back on, with your new settings".into());
+            }
         }
         if let Some(dir) = self.config_dir.clone() {
             if let Err(e) = cfg.save(&dir) {
@@ -197,73 +227,111 @@ impl Guard {
         self.last_close.map(|t| cooldown.saturating_sub(now.duration_since(t))).unwrap_or_default()
     }
 
-    fn hold_total(&mut self, until: Instant, now: Instant, kind: &'static str, why: String) {
-        self.count(Usage::Paused(kind));
-        let at = local_time(unix_now() + until.saturating_duration_since(now).as_secs());
-        let text = format!("Whole-browser limit paused until {}: {why}", &at[11..16]);
-        self.push_event("info", text.clone());
-        self.total_hold = Some((until, text));
+    /// " for Firefox Nightly" when more than one Firefox is running, so
+    /// messages say which one they mean; otherwise nothing.
+    fn which(&self, browser: u32) -> String {
+        match self.browsers.iter().find(|b| b.id == browser) {
+            Some(b) if self.browsers.len() > 1 => format!(" for {}", b.name),
+            _ => String::new(),
+        }
     }
 
-    /// Pause the whole-browser limit when closing tabs isn't bringing Firefox
-    /// down, or when it has closed its hourly maximum. Firefox keeps some
-    /// memory no tab close can free, so a limit set below that would
-    /// otherwise close a tab every cooldown, forever.
-    fn update_total_hold(&mut self, total_mb: u64, now: Instant) {
-        let hour = Duration::from_secs(3600);
-        while self.total_closes.front().is_some_and(|t| now.duration_since(*t) >= hour) {
-            self.total_closes.pop_front();
+    /// "tab process 123", or "Firefox Nightly tab process 123" when more
+    /// than one Firefox is running.
+    fn tab_name(&self, browser: u32, pid: u32) -> String {
+        match self.browsers.iter().find(|b| b.id == browser) {
+            Some(b) if self.browsers.len() > 1 => format!("{} tab process {pid}", b.name),
+            _ => format!("tab process {pid}"),
         }
-        if let Some((until, _)) = &self.total_hold {
+    }
+
+    fn hold_total(&mut self, lim: &mut TotalLimit, b: &Browser, until: Instant, now: Instant, kind: &'static str, why: String) {
+        self.count(Usage::Paused(kind));
+        let at = local_time(unix_now() + until.saturating_duration_since(now).as_secs());
+        let text = format!("Whole-browser limit{} paused until {}: {why}", self.which(b.id), &at[11..16]);
+        self.push_event("info", text.clone());
+        lim.hold = Some((until, text));
+    }
+
+    /// Pause the whole-browser limit for one Firefox when closing its tabs
+    /// isn't bringing it down, or when it has closed its hourly maximum.
+    /// Firefox keeps some memory no tab close can free, so a limit set below
+    /// that would otherwise close a tab every cooldown, forever.
+    fn update_total_hold(&mut self, b: &Browser, total_mb: u64, now: Instant) {
+        let mut lim = self.limits.remove(&b.id).unwrap_or_default();
+        self.judge_total(&mut lim, b, total_mb, now);
+        self.limits.insert(b.id, lim);
+    }
+
+    fn judge_total(&mut self, lim: &mut TotalLimit, b: &Browser, total_mb: u64, now: Instant) {
+        let hour = Duration::from_secs(3600);
+        while lim.closes.front().is_some_and(|t| now.duration_since(*t) >= hour) {
+            lim.closes.pop_front();
+        }
+        if let Some((until, _)) = &lim.hold {
             if now < *until {
                 return;
             }
-            self.total_hold = None;
-            self.push_event("info", "The whole-browser limit is back on".into());
+            lim.hold = None;
+            self.push_event("info", format!("The whole-browser limit{} is back on", self.which(b.id)));
         }
-        let cfg = &self.config;
+        let cfg = self.config.clone();
         let over = cfg.total_mb > 0 && total_mb > cfg.total_mb;
 
         // Judge the last close once the cooldown is up, just before the
-        // rule would pick another tab. It helped if Firefox is under the
+        // rule would pick another tab. It helped if this Firefox is under the
         // limit, or down by at least half of what the tab was using.
-        if let Some((at, before, freed)) = self.unjudged {
+        if let Some((at, before, freed)) = lim.unjudged {
             if now.duration_since(at) >= Duration::from_secs(cfg.kill_cooldown_secs) {
-                self.unjudged = None;
+                lim.unjudged = None;
                 let dropped = before.saturating_sub(total_mb);
                 if over && dropped < freed / 2 && cfg.total_backoff_mins > 0 {
                     let until = now + Duration::from_secs(cfg.total_backoff_mins * 60);
                     let why = format!(
-                        "closing a {} tab didn't bring Firefox down ({} before, {} now)",
+                        "closing a {} tab didn't bring {} down ({} before, {} now)",
                         gb(freed),
+                        b.name,
                         gb(before),
                         gb(total_mb)
                     );
-                    self.hold_total(until, now, "no-drop", why);
+                    self.hold_total(lim, b, until, now, "no-drop", why);
                     return;
                 }
             }
         }
 
-        let cap = self.config.total_max_per_hour as usize;
-        if over && cap > 0 && self.total_closes.len() >= cap {
-            let until = self.total_closes[self.total_closes.len() - cap] + hour;
+        let cap = cfg.total_max_per_hour as usize;
+        if over && cap > 0 && lim.closes.len() >= cap {
+            let until = lim.closes[lim.closes.len() - cap] + hour;
             let why = format!("it has closed {cap} tab{} in the last hour", if cap == 1 { "" } else { "s" });
-            self.hold_total(until, now, "hourly-cap", why);
+            self.hold_total(lim, b, until, now, "hourly-cap", why);
         }
     }
 
-    /// One check: judge `procs` (biggest first), log what's new, close at
-    /// most one tab through `close`, and update the snapshot.
-    pub fn pass(&mut self, procs: &[Proc], now: Instant, close: &mut dyn FnMut(u32)) -> Option<Closed> {
-        let total_mb: u64 = procs.iter().map(|p| p.mem_mb).sum();
+    /// One check: judge `procs` (biggest first) from the copies of Firefox
+    /// in `browsers`, log what's new, close at most one tab through `close`,
+    /// and update the snapshot.
+    pub fn pass(
+        &mut self,
+        procs: &[Proc],
+        browsers: &[Browser],
+        now: Instant,
+        close: &mut dyn FnMut(u32),
+    ) -> Option<Closed> {
+        self.browsers = browsers.to_vec();
+        // A Firefox that quit takes its pauses and hourly count with it.
+        self.limits.retain(|id, _| browsers.iter().any(|b| b.id == *id));
+        let totals = engine::totals(procs);
         // Only a closing mode builds up whole-browser closes to judge.
         if self.config.enabled && self.config.mode.closes() {
-            self.update_total_hold(total_mb, now);
+            for b in browsers {
+                self.update_total_hold(b, totals.get(&b.id).copied().unwrap_or(0), now);
+            }
         }
         let can_close = self.cooldown_left(now).is_zero();
-        let held = self.total_hold.is_some();
-        let eval = engine::evaluate(&self.config, procs, &self.spared, can_close, held);
+        let held: HashSet<u32> =
+            self.limits.iter().filter(|(_, lim)| lim.hold.is_some()).map(|(id, _)| *id).collect();
+        let eval = engine::evaluate(&self.config, procs, browsers, &self.spared, can_close, &held);
 
         // Forget processes that are gone.
         let alive: HashSet<u32> = procs.iter().map(|p| p.pid).collect();
@@ -284,33 +352,54 @@ impl Guard {
                 (Status::Over, _) => ("warn", "Queued to close"),
                 _ => ("warn", "Flagged"),
             };
-            self.push_event(kind, format!("{verb} tab process {} ({}): {reason}", row.proc.pid, gb(row.proc.mem_mb)));
+            let name = self.tab_name(row.proc.browser, row.proc.pid);
+            self.push_event(kind, format!("{verb} {name} ({}): {reason}", gb(row.proc.mem_mb)));
         }
 
         let mut closed = None;
         if let Some((pid, reason)) = &eval.close {
-            let mem_mb = procs.iter().find(|p| p.pid == *pid).map(|p| p.mem_mb).unwrap_or(0);
+            let (mem_mb, browser) = procs.iter().find(|p| p.pid == *pid).map_or((0, 0), |p| (p.mem_mb, p.browser));
             close(*pid);
             self.last_close = Some(now);
             if eval.close_by_total {
-                self.total_closes.push_back(now);
-                self.unjudged = Some((now, total_mb, mem_mb));
+                let before = totals.get(&browser).copied().unwrap_or(0);
+                let lim = self.limits.entry(browser).or_default();
+                lim.closes.push_back(now);
+                lim.unjudged = Some((now, before, mem_mb));
             }
             self.count(Usage::Closed(if eval.close_by_total { "whole-browser" } else { "per-tab" }));
-            self.push_event("closed", format!("Closed tab process {pid} ({}): {reason}", gb(mem_mb)));
-            closed = Some(Closed { pid: *pid, mem_mb });
+            let name = self.tab_name(browser, *pid);
+            self.push_event("closed", format!("Closed {name} ({}): {reason}", gb(mem_mb)));
+            let browser = browsers.iter().find(|b| b.id == browser).map_or("Firefox".into(), |b| b.name.clone());
+            closed = Some(Closed { pid: *pid, mem_mb, browser });
         }
 
-        let tabs = eval.rows.iter().filter(|r| r.proc.kind == Kind::Tab);
+        let is_tab = |r: &&Row| r.proc.kind == Kind::Tab;
+        let tabs = eval.rows.iter().filter(is_tab);
+        // Holds in the order the browsers are listed.
+        let holds: Vec<&str> = browsers
+            .iter()
+            .filter_map(|b| self.limits.get(&b.id)?.hold.as_ref().map(|(_, text)| text.as_str()))
+            .collect();
         self.snapshot = Snapshot {
             firefox_running: !procs.is_empty(),
             total_mb: eval.total_mb,
             tab_count: tabs.clone().count(),
             flagged: tabs.clone().filter(|r| r.status == Status::Warn).count(),
             over: tabs.filter(|r| r.status == Status::Over).count(),
+            browsers: browsers
+                .iter()
+                .map(|b| BrowserSummary {
+                    id: b.id,
+                    name: b.name.clone(),
+                    app: b.app.clone(),
+                    total_mb: totals.get(&b.id).copied().unwrap_or(0),
+                    tab_count: eval.rows.iter().filter(is_tab).filter(|r| r.proc.browser == b.id).count(),
+                })
+                .collect(),
             rows: eval.rows,
             cooldown_secs: self.cooldown_left(now).as_secs(),
-            total_hold: self.total_hold.as_ref().map(|(_, text)| text.clone()),
+            total_hold: (!holds.is_empty()).then(|| holds.join(". ")),
             checked_at: unix_now(),
         };
         closed
@@ -327,7 +416,8 @@ impl Guard {
             .cloned()
             .ok_or("That tab process is gone, or isn't a Firefox tab")?;
         close(pid);
-        self.push_event("closed", format!("You closed tab process {pid} ({})", gb(row.proc.mem_mb)));
+        let name = self.tab_name(row.proc.browser, pid);
+        self.push_event("closed", format!("You closed {name} ({})", gb(row.proc.mem_mb)));
         self.count(Usage::Closed("by-you"));
         Ok(())
     }
@@ -359,7 +449,16 @@ mod tests {
     use crate::config::Mode;
 
     fn tab(pid: u32, mem_mb: u64) -> Proc {
-        Proc { pid, kind: Kind::Tab, mem_mb, cpu: 0.0, age_secs: 60, growth_mb_per_min: 0.0 }
+        Proc { pid, browser: 0, kind: Kind::Tab, mem_mb, cpu: 0.0, age_secs: 60, growth_mb_per_min: 0.0 }
+    }
+
+    fn browser(id: u32, name: &str) -> Browser {
+        Browser { id, name: name.into(), app: format!("/Applications/{name}.app") }
+    }
+
+    /// The one Firefox most tests run with.
+    fn firefox() -> Vec<Browser> {
+        vec![browser(0, "Firefox")]
     }
 
     fn guard(mode: Mode) -> Guard {
@@ -369,7 +468,7 @@ mod tests {
     /// Run a pass and return the pids it closed.
     fn run(g: &mut Guard, procs: &[Proc], now: Instant) -> Vec<u32> {
         let mut closed = Vec::new();
-        g.pass(procs, now, &mut |pid| closed.push(pid));
+        g.pass(procs, &firefox(), now, &mut |pid| closed.push(pid));
         closed
     }
 
@@ -410,8 +509,8 @@ mod tests {
     #[test]
     fn pass_reports_what_it_closed() {
         let mut g = guard(Mode::WarnThenClose);
-        let closed = g.pass(&[tab(7, 2100)], Instant::now(), &mut |_| {});
-        assert_eq!(closed, Some(Closed { pid: 7, mem_mb: 2100 }));
+        let closed = g.pass(&[tab(7, 2100)], &firefox(), Instant::now(), &mut |_| {});
+        assert_eq!(closed, Some(Closed { pid: 7, mem_mb: 2100, browser: "Firefox".into() }));
         assert!(g.events().next().unwrap().text.contains("Closed tab process 7 (2.1 GB)"));
     }
 
@@ -636,6 +735,64 @@ mod tests {
             ]
         );
         assert!(g.take_usage().is_empty(), "taken once");
+    }
+
+    /// `crowd` for Firefox (id 0, pids 1-12) beside Nightly (id 1, pids
+    /// 101-112), each 10.5 GB: both over the 8 GB limit on their own.
+    fn two_crowds(drop: &[u32], extra: [u64; 2]) -> Vec<Proc> {
+        let nightly_drop: Vec<u32> = drop.iter().filter(|p| **p > 100).map(|p| p - 100).collect();
+        let mut v = crowd(drop, extra[0]);
+        v.extend(crowd(&nightly_drop, extra[1]).into_iter().map(|p| Proc {
+            pid: p.pid + 100,
+            browser: 1,
+            ..p
+        }));
+        v.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb).then(a.pid.cmp(&b.pid)));
+        v
+    }
+
+    fn run_two(g: &mut Guard, procs: &[Proc], now: Instant) -> Vec<u32> {
+        let mut closed = Vec::new();
+        g.pass(procs, &[browser(0, "Firefox"), browser(1, "Firefox Nightly")], now, &mut |pid| closed.push(pid));
+        closed
+    }
+
+    #[test]
+    fn each_firefox_backs_off_on_its_own() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        // Firefox's tabs are the biggest-first pick: pid 1.
+        assert_eq!(run_two(&mut g, &two_crowds(&[], [0, 0]), t), [1]);
+        // Firefox grows it straight back; Firefox pauses, Nightly carries on.
+        assert_eq!(run_two(&mut g, &two_crowds(&[1], [900, 0]), t + secs(61)), [101]);
+        let hold = g.snapshot.total_hold.clone().expect("Firefox paused");
+        assert!(hold.starts_with("Whole-browser limit for Firefox paused until"), "{hold}");
+        assert!(hold.contains("didn't bring Firefox down"), "{hold}");
+        assert!(g.events().any(|e| e.text.starts_with("Closed Firefox Nightly tab process 101 (0.9 GB): Firefox Nightly is at 10.5 GB")));
+        // Nightly's close helped, so it keeps going.
+        assert_eq!(run_two(&mut g, &two_crowds(&[1, 101], [900, 0]), t + secs(122)), [102]);
+        assert_eq!(g.snapshot.browsers.iter().map(|b| b.tab_count).collect::<Vec<_>>(), [11, 11]);
+    }
+
+    #[test]
+    fn a_firefox_that_quits_takes_its_pause_with_it() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        run(&mut g, &crowd(&[], 0), t);
+        run(&mut g, &crowd(&[1], 900), t + secs(61));
+        assert!(g.snapshot.total_hold.is_some());
+        // Firefox quits, then starts again.
+        g.pass(&[], &[], t + secs(70), &mut |_| {});
+        assert_eq!(run(&mut g, &crowd(&[], 0), t + secs(140)), [1]);
+    }
+
+    #[test]
+    fn one_firefox_keeps_the_old_wording() {
+        let mut g = guard(Mode::Watch);
+        run(&mut g, &[tab(1, 2500)], Instant::now());
+        let text = &g.events().next().unwrap().text;
+        assert!(text.starts_with("Would close tab process 1 (2.4 GB): Over the"), "{text}");
+        assert_eq!(g.snapshot.browsers.len(), 1);
     }
 
     #[test]

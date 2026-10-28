@@ -3,6 +3,10 @@
 //! Each pass lists every pid, but only looks closely at Firefox's: a pid's
 //! path and arguments are read once and cached, and one `proc_pid_rusage`
 //! call per Firefox process gives its memory, CPU time and start time.
+//!
+//! Several copies of Firefox can run at once (release, Nightly, Developer
+//! Edition, or one copy with a second profile). Each process is tied to the
+//! copy that started it, so their limits can be applied separately.
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -20,6 +24,8 @@ pub enum Kind {
 #[derive(Debug, Clone, Serialize)]
 pub struct Proc {
     pub pid: u32,
+    /// The copy of Firefox it belongs to: a `Browser::id`.
+    pub browser: u32,
     pub kind: Kind,
     /// Physical footprint, the number Activity Monitor shows as "Memory".
     pub mem_mb: u64,
@@ -31,11 +37,33 @@ pub struct Proc {
     pub growth_mb_per_min: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// One running copy of Firefox.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Browser {
+    /// Its main process's pid.
+    pub id: u32,
+    /// "Firefox", "Firefox Nightly", "Firefox (work)", "Firefox (2)"
+    pub name: String,
+    /// The app bundle, for asking it to open about:processes.
+    pub app: String,
+}
+
+#[derive(Debug, Clone)]
 enum Known {
     NotFirefox,
     /// `start` tells a reused pid apart from the process we classified.
-    Firefox { kind: Kind, start: u64 },
+    Firefox { kind: Kind, start: u64, parent: u32, app: String, profile: Option<String> },
+}
+
+/// What grouping needs to know about one Firefox process.
+#[derive(Debug, Clone)]
+pub struct Member<'a> {
+    pub pid: u32,
+    pub kind: Kind,
+    pub parent: u32,
+    pub start: u64,
+    pub app: &'a str,
+    pub profile: Option<&'a str>,
 }
 
 pub struct Sampler {
@@ -69,8 +97,9 @@ impl Sampler {
         (ticks as u128 * self.timebase.0 as u128 / self.timebase.1 as u128) as u64
     }
 
-    /// Firefox's processes, biggest first.
-    pub fn sample(&mut self) -> Vec<Proc> {
+    /// Firefox's processes, biggest first, and the copies of Firefox they
+    /// belong to, oldest first.
+    pub fn sample(&mut self) -> (Vec<Proc>, Vec<Browser>) {
         list_pids(&mut self.pid_buf);
         let now = Instant::now();
         let now_ticks = unsafe { mach_absolute_time() };
@@ -81,20 +110,14 @@ impl Sampler {
         self.history.retain(|pid, _| alive.contains(pid));
 
         let mut procs = Vec::new();
+        let mut members = Vec::new();
         for i in 0..self.pid_buf.len() {
             let pid = self.pid_buf[i] as u32;
             if pid == 0 {
                 continue;
             }
-            let known = match self.known.get(&pid) {
-                Some(k) => *k,
-                None => {
-                    let k = identify(pid);
-                    self.known.insert(pid, k);
-                    k
-                }
-            };
-            let Known::Firefox { kind, start } = known else { continue };
+            let known = self.known.entry(pid).or_insert_with(|| identify(pid));
+            let Known::Firefox { kind, start, parent, .. } = *known else { continue };
             let Some(ri) = rusage(pid) else {
                 self.known.remove(&pid);
                 continue;
@@ -123,10 +146,25 @@ impl Sampler {
                 hist.pop_front();
             }
 
-            procs.push(Proc { pid, kind, mem_mb, cpu, age_secs, growth_mb_per_min: growth_mb_per_min(hist) });
+            procs.push(Proc { pid, browser: pid, kind, mem_mb, cpu, age_secs, growth_mb_per_min: growth_mb_per_min(hist) });
+            members.push((pid, kind, parent, start));
+        }
+
+        let members: Vec<Member> = members
+            .iter()
+            .filter_map(|&(pid, kind, parent, start)| match self.known.get(&pid)? {
+                Known::Firefox { app, profile, .. } => {
+                    Some(Member { pid, kind, parent, start, app, profile: profile.as_deref() })
+                }
+                Known::NotFirefox => None,
+            })
+            .collect();
+        let (of, browsers) = group(&members);
+        for p in &mut procs {
+            p.browser = of.get(&p.pid).copied().unwrap_or(p.pid);
         }
         procs.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb).then(a.pid.cmp(&b.pid)));
-        procs
+        (procs, browsers)
     }
 }
 
@@ -136,9 +174,73 @@ fn identify(pid: u32) -> Known {
     if !is_firefox_path(&path) {
         return Known::NotFirefox;
     }
-    let args = if path.contains("plugin-container") { proc_args(pid).unwrap_or_default() } else { Vec::new() };
+    let kind_needs_args = path.contains("plugin-container") || path.ends_with("/MacOS/firefox");
+    let args = if kind_needs_args { proc_args(pid).unwrap_or_default() } else { Vec::new() };
     let start = rusage(pid).map(|r| r.ri_proc_start_abstime).unwrap_or(0);
-    Known::Firefox { kind: classify(&path, &args), start }
+    let kind = classify(&path, &args);
+    let profile = if kind == Kind::Main { profile_name(&args) } else { None };
+    Known::Firefox { kind, start, parent: parent_pid(pid), app: app_bundle(&path).to_string(), profile }
+}
+
+/// "/Applications/Firefox Nightly.app" from any path inside it.
+pub fn app_bundle(path: &str) -> &str {
+    path.find(".app/Contents/MacOS/").map_or(path, |i| &path[..i + 4])
+}
+
+/// The profile a copy of Firefox was started with (`-P work`, or
+/// `-profile /path/to/work`), if it was given one.
+pub fn profile_name(args: &[String]) -> Option<String> {
+    let i = args.iter().position(|a| matches!(a.as_str(), "-P" | "-p" | "--P" | "-profile" | "--profile"))?;
+    let value = args.get(i + 1).filter(|v| !v.starts_with('-'))?;
+    let name = value.trim_end_matches('/').rsplit('/').next().unwrap_or(value);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Tie each process to the copy of Firefox it belongs to, and name the
+/// copies. A process belongs to the Firefox that started it; one that was
+/// handed to launchd (the crash helper does this) belongs to the oldest
+/// Firefox from the same app. Returns pid -> browser id, and the browsers,
+/// oldest first.
+pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
+    let mut mains: Vec<&Member> = members.iter().filter(|m| m.kind == Kind::Main).collect();
+    mains.sort_by_key(|m| (m.start, m.pid));
+    let mut of = HashMap::new();
+    let mut orphans = Vec::new();
+    for m in members {
+        let owner = if m.kind == Kind::Main {
+            Some(m.pid)
+        } else {
+            mains.iter().find(|b| b.pid == m.parent).or_else(|| mains.iter().find(|b| b.app == m.app)).map(|b| b.pid)
+        };
+        // Firefox itself is gone but this process isn't yet: it stands alone.
+        let owner = owner.unwrap_or_else(|| {
+            orphans.push(m);
+            m.pid
+        });
+        of.insert(m.pid, owner);
+    }
+
+    let mut browsers: Vec<Browser> = mains
+        .iter()
+        .chain(orphans.iter())
+        .map(|m| {
+            let base = m.app.rsplit('/').next().unwrap_or(m.app).trim_end_matches(".app");
+            let name = match m.profile {
+                Some(p) => format!("{base} ({p})"),
+                None => base.to_string(),
+            };
+            Browser { id: m.pid, name, app: m.app.to_string() }
+        })
+        .collect();
+    // Two copies with the same name: number the later ones.
+    let names: Vec<String> = browsers.iter().map(|b| b.name.clone()).collect();
+    for (i, b) in browsers.iter_mut().enumerate().skip(1) {
+        let earlier = names[..i].iter().filter(|n| **n == names[i]).count();
+        if earlier > 0 {
+            b.name = format!("{} ({})", names[i], earlier + 1);
+        }
+    }
+    (of, browsers)
 }
 
 /// True for executables inside any Firefox app bundle (release, Developer
@@ -238,6 +340,15 @@ fn pid_path(pid: u32) -> Option<String> {
     (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
 }
 
+fn parent_pid(pid: u32) -> u32 {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr() as *mut libc::c_void, size)
+    };
+    if n == size { unsafe { info.assume_init() }.pbi_ppid } else { 0 }
+}
+
 fn proc_args(pid: u32) -> Option<Vec<String>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
@@ -284,6 +395,68 @@ mod tests {
         assert!(!is_firefox_path("/usr/bin/firefox"));
         // A folder named Firefox isn't enough; the bundle itself must be.
         assert!(!is_firefox_path("/Users/a/Firefox/Other.app/Contents/MacOS/other"));
+    }
+
+    #[test]
+    fn finds_the_app_and_profile() {
+        let nightly = "/Applications/Firefox Nightly.app";
+        assert_eq!(app_bundle(&format!("{nightly}/Contents/MacOS/firefox")), nightly);
+        assert_eq!(
+            app_bundle(&format!("{nightly}/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container")),
+            nightly
+        );
+        assert_eq!(profile_name(&args(&["firefox", "-P", "work"])), Some("work".into()));
+        assert_eq!(profile_name(&args(&["firefox", "-profile", "/Users/a/Profiles/abc.work/"])), Some("abc.work".into()));
+        assert_eq!(profile_name(&args(&["firefox", "-P"])), None);
+        assert_eq!(profile_name(&args(&["firefox", "-P", "-no-remote"])), None);
+        assert_eq!(profile_name(&args(&["firefox"])), None);
+    }
+
+    fn member<'a>(pid: u32, kind: Kind, parent: u32, app: &'a str) -> Member<'a> {
+        Member { pid, kind, parent, start: pid as u64, app, profile: None }
+    }
+
+    #[test]
+    fn groups_processes_by_the_firefox_that_started_them() {
+        let (rel, nightly) = ("/Applications/Firefox.app", "/Applications/Firefox Nightly.app");
+        let members = [
+            member(10, Kind::Main, 1, rel),
+            member(11, Kind::Tab, 10, rel),
+            member(12, Kind::Gpu, 10, rel),
+            member(13, Kind::Other, 1, rel), // the crash helper, handed to launchd
+            member(20, Kind::Main, 1, nightly),
+            member(21, Kind::Tab, 20, nightly),
+        ];
+        let (of, browsers) = group(&members);
+        assert_eq!([of[&11], of[&12], of[&13], of[&21]], [10, 10, 10, 20]);
+        let names: Vec<&str> = browsers.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Firefox", "Firefox Nightly"]);
+        assert_eq!(browsers[1].app, nightly);
+    }
+
+    #[test]
+    fn names_copies_of_the_same_firefox_apart() {
+        let rel = "/Applications/Firefox.app";
+        let mut work = member(30, Kind::Main, 1, rel);
+        work.profile = Some("work");
+        let members = [
+            member(10, Kind::Main, 1, rel),
+            member(20, Kind::Main, 1, rel),
+            work,
+            member(40, Kind::Main, 1, rel),
+            member(21, Kind::Tab, 20, rel),
+        ];
+        let (of, browsers) = group(&members);
+        assert_eq!(of[&21], 20, "a tab stays with its own Firefox, not the oldest");
+        let names: Vec<&str> = browsers.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Firefox", "Firefox (2)", "Firefox (work)", "Firefox (3)"]);
+    }
+
+    #[test]
+    fn a_tab_whose_firefox_is_gone_stands_alone() {
+        let (of, browsers) = group(&[member(11, Kind::Tab, 1, "/Applications/Firefox.app")]);
+        assert_eq!(of[&11], 11);
+        assert_eq!(browsers.len(), 1);
     }
 
     fn args(a: &[&str]) -> Vec<String> {
@@ -354,6 +527,7 @@ mod tests {
         assert!(!is_firefox_path(&path));
         let ri = rusage(me).expect("own rusage");
         assert!(ri.ri_phys_footprint > 0);
+        assert_eq!(parent_pid(me), unsafe { libc::getppid() } as u32);
         let args = proc_args(me).expect("own args");
         assert!(!args.is_empty());
         let mut buf = Vec::new();
@@ -368,10 +542,14 @@ mod tests {
         let mut s = Sampler::new();
         s.sample();
         std::thread::sleep(Duration::from_secs(1));
-        let procs = s.sample();
+        let (procs, browsers) = s.sample();
         let total: u64 = procs.iter().map(|p| p.mem_mb).sum();
         let tabs = procs.iter().filter(|p| p.kind == Kind::Tab).count();
         println!("{} Firefox processes, {tabs} tabs, {total} MB", procs.len());
+        for b in &browsers {
+            let n = procs.iter().filter(|p| p.browser == b.id).count();
+            println!("{} ({}): {n} processes, {}", b.name, b.id, b.app);
+        }
         for p in procs.iter().take(8) {
             println!("{:>6} {:?} {} MB cpu {:.1}% age {}s", p.pid, p.kind, p.mem_mb, p.cpu, p.age_secs);
         }
