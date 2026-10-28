@@ -66,6 +66,7 @@
           <span class="spacer"></span>
           <button id="about-processes" class="link">Which site is which? Open about:processes</button>
         </div>
+        <div class="scroll-box" tabindex="0" role="region" aria-label="Firefox processes">
         <table>
           <caption class="visually-hidden">Firefox processes, biggest first</caption>
           <thead>
@@ -81,13 +82,14 @@
           </thead>
           <tbody id="rows"></tbody>
         </table>
+        </div>
         <p class="muted small">
           Memory is each process's own footprint (what Activity Monitor shows). Firefox doesn't tell
           other apps which website runs in which process; its about:processes page does.
         </p>
       </section>
 
-      <section id="settings" class="panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <section id="settings" class="panel" data-fit role="tabpanel" aria-labelledby="tab-settings" hidden>
         <form id="settings-form" class="settings">
           <fieldset>
             <legend>Per-tab limits</legend>
@@ -138,7 +140,7 @@
         </form>
       </section>
 
-      <section id="about" class="panel" role="tabpanel" aria-labelledby="tab-about" hidden>
+      <section id="about" class="panel" data-fit role="tabpanel" aria-labelledby="tab-about" hidden>
         <div class="about">
           <img src="icon.png" alt="" width="80" height="80" />
           <div class="about-body">
@@ -165,7 +167,7 @@
       </section>
 
       <section id="activity" class="panel" role="tabpanel" aria-labelledby="tab-activity" hidden>
-        <ul id="events" class="events" aria-label="Activity, newest first"></ul>
+        <ul id="events" class="events scroll-box" tabindex="0" aria-label="Activity, newest first"></ul>
         <p class="muted small">Also written to <code id="log-path"></code></p>
       </section>
     </main>

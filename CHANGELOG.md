@@ -15,5 +15,6 @@ First public release.
 - An About tab (also in the menu bar) with your version, a manual update check, and links.
 - Works with the keyboard and VoiceOver: arrow keys move between tabs and modes, every
   button says which process it acts on, and focus stays put while the table refreshes.
-- The window opens tall enough for its longest tab, up to the height of your screen. Opening
+- The window opens tall enough that Settings and About fit without scrolling; the process
+  list and activity log scroll inside their own boxes, with the column names kept in view. Opening
   Tab Guard again from Spotlight or Applications while it's running shows the window.

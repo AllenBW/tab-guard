@@ -57,21 +57,30 @@ async function refresh() {
 }
 
 let fitted = false;
-/** Once, after the first render: size the window to the tallest tab so none
- *  of them scrolls (the app caps it at the screen's height). */
+/** Once, after the first render: size the window so Settings and About fit
+ *  without scrolling. The process list and the activity log can be any
+ *  length, so they scroll inside their own boxes and fill whatever room
+ *  that leaves. The welcome card
+ *  is left out too, since it goes away after the first run. */
 function fitWindow() {
   if (fitted) return;
   fitted = true;
   const panels = [...document.querySelectorAll(".panel")];
   const shown = panels.find((p) => !p.hidden);
-  const style = getComputedStyle(document.body);
+  const welcome = $("#welcome");
+  const welcomeHidden = welcome.hidden;
+  welcome.hidden = true;
+  document.body.classList.add("measuring");
   let tallest = 0;
-  for (const p of panels) {
+  for (const p of panels.filter((p) => p.dataset.fit !== undefined)) {
     for (const q of panels) q.hidden = q !== p;
     tallest = Math.max(tallest, $("main").getBoundingClientRect().bottom - document.body.getBoundingClientRect().top);
   }
   for (const q of panels) q.hidden = q !== shown;
-  invoke("fit_window", { height: tallest + parseFloat(style.paddingBottom) }).catch(() => {});
+  document.body.classList.remove("measuring");
+  welcome.hidden = welcomeHidden;
+  const height = tallest + parseFloat(getComputedStyle(document.body).paddingBottom);
+  invoke("fit_window", { height }).catch(() => {});
 }
 
 function render() {

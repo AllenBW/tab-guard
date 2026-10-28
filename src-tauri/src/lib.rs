@@ -468,8 +468,8 @@ fn update_loop(app: AppHandle, shared: Arc<Shared>) {
 }
 
 /// Make the window tall enough for `height` points of content, up to the
-/// height of the screen, and keep it on screen. The page measures its
-/// tallest tab and calls this once when it loads.
+/// height of the screen, and keep it on screen. The page measures Settings
+/// and About and calls this once when it loads.
 #[tauri::command]
 fn fit_window(window: tauri::WebviewWindow, height: f64) {
     let Ok(Some(monitor)) = window.current_monitor() else { return };
