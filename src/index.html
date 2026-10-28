@@ -26,7 +26,7 @@
         <button type="button" role="radio" data-mode="warn-then-close">Warn, then close</button>
         <button type="button" role="radio" data-mode="close">Close at limit</button>
       </div>
-      <p id="mode-help" class="muted"></p>
+      <p id="mode-help" class="muted small"></p>
     </section>
 
     <div id="banner" class="banner" hidden></div>
@@ -34,13 +34,14 @@
     <!-- Announcements for screen readers only. -->
     <div id="sr-status" class="visually-hidden" role="status" aria-live="polite"></div>
 
-    <section id="welcome" class="welcome" aria-labelledby="welcome-title" hidden>
+    <!-- Shown over the window on first run, so it doesn't push the process list down. -->
+    <dialog id="welcome" class="welcome" aria-labelledby="welcome-title">
       <h2 id="welcome-title">Welcome to Tab Guard</h2>
       <p>
         Tab Guard watches your browser's tabs from the menu bar (Firefox and Chrome, and browsers built on
         them). When a tab grows past your limits it can close it, and the browser shows that tab as crashed,
         with a button to reload it. New installs start in <b>Watch only</b>, so nothing is closed until you
-        pick another mode above.
+        pick another mode at the top of the window.
       </p>
       <p>
         The first time you use <b>Which site is which?</b> with Firefox, macOS asks whether Tab Guard may
@@ -51,7 +52,7 @@
         <small class="muted">Which rule closed a tab, which mode you use, and your app and macOS versions.
         Never websites, process names or memory figures. Off unless you tick this.</small></span></label>
       <button id="welcome-done" class="primary">Got it</button>
-    </section>
+    </dialog>
 
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button type="button" role="tab" id="tab-processes" aria-controls="processes" data-panel="processes" aria-selected="true">Processes</button>
@@ -93,19 +94,21 @@
 
       <section id="settings" class="panel" data-fit role="tabpanel" aria-labelledby="tab-settings" hidden>
         <form id="settings-form" class="settings">
-          <div id="limit-picker" class="limit-picker" hidden>
-            <span id="limit-picker-label">Limits for</span>
-            <div id="limit-targets" class="segmented small-seg" role="radiogroup" aria-labelledby="limit-picker-label"></div>
-            <small class="muted">Each browser has its own per-tab and whole-browser limits. Everything else applies to all of them.</small>
+          <div class="group-head">
+            <h2 id="limits-heading">Limits</h2>
+            <div id="limit-picker" class="limit-picker" hidden>
+              <div id="limit-targets" class="segmented small-seg" role="radiogroup" aria-labelledby="limits-heading"></div>
+              <small class="muted">Each browser has its own limits.</small>
+            </div>
           </div>
-          <fieldset>
+          <fieldset class="pair">
             <legend>Per-tab limits<span class="limit-for"></span></legend>
             <label>Warn when one tab passes
               <span class="field"><input type="number" name="warn_gb" step="0.1" min="0.1" /> GB</span></label>
             <label>Close a tab past
               <span class="field"><input type="number" name="kill_gb" step="0.1" min="0.1" /> GB</span></label>
           </fieldset>
-          <fieldset>
+          <fieldset class="pair">
             <legend>Whole-browser limit<span class="limit-for"></span></legend>
             <label><span id="total-label">When the whole browser passes</span>
               <span class="field"><input type="number" name="total_gb" step="0.5" min="0" /> GB</span>
@@ -113,16 +116,11 @@
             <label>But never close a tab smaller than
               <span class="field"><input type="number" name="total_min_victim_mb" step="50" min="0" /> MB</span></label>
           </fieldset>
-          <fieldset>
-            <legend>Timing</legend>
-            <label>Check every
-              <span class="field"><input type="number" name="interval_secs" step="1" min="3" /> seconds</span>
-              <small>Every 3 seconds while this window is open.</small></label>
-            <label>Wait at least
-              <span class="field"><input type="number" name="kill_cooldown_secs" step="5" min="0" /> seconds between closes</span></label>
-          </fieldset>
+          <div class="group-head">
+            <h2 id="others-heading">Everything else</h2>
+          </div>
           <fieldset class="wide">
-            <legend>How the whole-browser limit picks and paces closes</legend>
+            <legend>How tabs are picked and paced</legend>
             <label class="check"><input type="checkbox" name="prefer_idle" /> Prefer idle tabs (ones you're probably not using)</label>
             <label>A tab counts as idle under
               <span class="field"><input type="number" name="idle_cpu_percent" step="0.5" min="0" /> % CPU</span></label>
@@ -132,17 +130,19 @@
             <label>Close at most
               <span class="field"><input type="number" name="total_max_per_hour" step="1" min="0" /> tabs an hour for this limit</span>
               <small>0 means no cap. Per-tab limits aren't affected by either setting.</small></label>
+            <label>Wait at least
+              <span class="field"><input type="number" name="kill_cooldown_secs" step="5" min="0" /> seconds between closes</span></label>
           </fieldset>
-          <fieldset>
+          <fieldset class="general">
             <legend>General</legend>
+            <label>Check every
+              <span class="field"><input type="number" name="interval_secs" step="1" min="3" /> seconds</span>
+              <small>Every 3 seconds while this window is open.</small></label>
             <label class="check"><input type="checkbox" name="notify_on_close" /> Show a notification when a tab is closed</label>
             <label class="check"><input type="checkbox" id="autostart" /> Start Tab Guard when I log in</label>
             <label class="check usage-row"><input type="checkbox" name="share_usage" /> Share anonymous usage counts</label>
             <small class="usage-row">Which rule closed a tab, which mode you use, and your app and macOS versions.
               Never websites, process names or memory figures.</small>
-          </fieldset>
-          <fieldset>
-            <legend>Updates</legend>
             <label class="check"><input type="checkbox" name="auto_update" /> Install updates automatically</label>
             <small>Your version and a manual check are under About.</small>
           </fieldset>

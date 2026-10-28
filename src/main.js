@@ -66,16 +66,12 @@ let fitted = false;
 /** Once, after the first render: size the window so Settings and About fit
  *  without scrolling. The process list and the activity log can be any
  *  length, so they scroll inside their own boxes and fill whatever room
- *  that leaves. The welcome card
- *  is left out too, since it goes away after the first run. */
+ *  that leaves. */
 function fitWindow() {
   if (fitted) return;
   fitted = true;
   const panels = [...document.querySelectorAll(".panel")];
   const shown = panels.find((p) => !p.hidden);
-  const welcome = $("#welcome");
-  const welcomeHidden = welcome.hidden;
-  welcome.hidden = true;
   document.body.classList.add("measuring");
   let tallest = 0;
   for (const p of panels.filter((p) => p.dataset.fit !== undefined)) {
@@ -84,7 +80,6 @@ function fitWindow() {
   }
   for (const q of panels) q.hidden = q !== shown;
   document.body.classList.remove("measuring");
-  welcome.hidden = welcomeHidden;
   const height = tallest + parseFloat(getComputedStyle(document.body).paddingBottom);
   invoke("fit_window", { height }).catch(() => {});
 }
@@ -118,7 +113,9 @@ function render() {
   banner.className = config.enabled ? "banner" : "banner paused";
   banner.textContent = text ?? "";
 
-  $("#welcome").hidden = config.welcomed;
+  const welcome = $("#welcome");
+  if (!config.welcomed && !welcome.open) welcome.showModal();
+  if (config.welcomed && welcome.open) welcome.close();
   for (const el of document.querySelectorAll(".usage-row")) el.hidden = !view.usage_available;
   $("#version").textContent = `Version ${view.version}`;
   $("#update-status").textContent = view.update_status;
@@ -174,6 +171,8 @@ function renderLimitTargets(targets) {
   picker.hidden = !choosing;
   for (const el of document.querySelectorAll(".limit-for")) el.textContent = choosing ? ` · ${shortName(name)}` : "";
   $("#total-label").textContent = choosing ? `When all of ${name} passes` : "When the whole browser passes";
+  $("#limits-heading").textContent = choosing ? "Limits for" : "Limits";
+  $("#others-heading").textContent = choosing ? "For all browsers" : "Everything else";
   const key = JSON.stringify([limitTarget, targets]);
   if (!choosing || key === targetsKey) return;
   targetsKey = key;
@@ -399,9 +398,11 @@ for (const a of document.querySelectorAll("[data-link]")) {
   a.addEventListener("click", () => invoke("open_link", { name: a.dataset.link }).catch((e) => toast(String(e), true)));
 }
 
-$("#welcome-done").addEventListener("click", () =>
-  saveConfig({ ...view.config, welcomed: true, share_usage: view.usage_available && $("#welcome-usage").checked }),
-);
+const welcomed = () =>
+  saveConfig({ ...view.config, welcomed: true, share_usage: view.usage_available && $("#welcome-usage").checked });
+$("#welcome-done").addEventListener("click", welcomed);
+// Escape closes the welcome too; count that as seen.
+$("#welcome").addEventListener("cancel", welcomed);
 
 $("#check-updates").addEventListener("click", async (e) => {
   e.target.disabled = true;
