@@ -159,6 +159,8 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
     Ok(TrayItems { tray, summary, detail, enabled, modes })
 }
 
+const MIN_HEIGHT: f64 = 480.0;
+
 /// Open the window, creating it if needed, optionally on one of its tabs
 /// ("about"). It's destroyed again when closed, so its web view isn't holding
 /// memory while Tab Guard sits in the menu bar.
@@ -176,7 +178,7 @@ fn show_window(app: &AppHandle, panel: Option<&'static str>) {
         let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(page.into()))
             .title("Tab Guard")
             .inner_size(980.0, 680.0)
-            .min_inner_size(720.0, 480.0)
+            .min_inner_size(720.0, MIN_HEIGHT)
             .focused(true)
             .build();
         match built {
@@ -394,12 +396,26 @@ async fn open_about_processes() -> Result<String, String> {
 async fn install_update(app: &AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
-    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
-        return Ok(None);
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        // No release manifest on GitHub (nothing published yet) means
+        // there's nothing newer to install.
+        Ok(None) | Err(tauri_plugin_updater::Error::ReleaseNotFound) => return Ok(None),
+        Err(e) => return Err(update_error(&e)),
     };
     let version = update.version.clone();
     update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     Ok(Some(version))
+}
+
+/// Words for a failed check. Network trouble is the usual cause, and the
+/// updater's own messages are written for developers.
+fn update_error(e: &tauri_plugin_updater::Error) -> String {
+    use tauri_plugin_updater::Error::*;
+    match e {
+        Reqwest(_) | Network(_) => "no connection to GitHub. Tab Guard will try again later.".into(),
+        e => e.to_string(),
+    }
 }
 
 fn set_update_status(shared: &Shared, text: String) {
@@ -451,6 +467,35 @@ fn update_loop(app: AppHandle, shared: Arc<Shared>) {
     }
 }
 
+/// Make the window tall enough for `height` points of content, up to the
+/// height of the screen, and keep it on screen. The page measures its
+/// tallest tab and calls this once when it loads.
+#[tauri::command]
+fn fit_window(window: tauri::WebviewWindow, height: f64) {
+    let Ok(Some(monitor)) = window.current_monitor() else { return };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let (top, avail) = (area.position.y as f64 / scale, area.size.height as f64 / scale);
+    let Ok(size) = window.inner_size() else { return };
+    let Ok(outer) = window.outer_size() else { return };
+    let title_bar = (outer.height as f64 - size.height as f64) / scale;
+    let height = fit_height(height, avail - title_bar);
+    let _ = window.set_size(tauri::LogicalSize::new(size.width as f64 / scale, height));
+    if let Ok(pos) = window.outer_position() {
+        let y = pos.y as f64 / scale;
+        if y + title_bar + height > top + avail {
+            let x = pos.x as f64 / scale;
+            let _ = window.set_position(tauri::LogicalPosition::new(x, top.max(top + avail - title_bar - height)));
+        }
+    }
+}
+
+/// The window's content height: what the page needs, no taller than the
+/// screen allows and no shorter than the minimum.
+fn fit_height(wanted: f64, available: f64) -> f64 {
+    wanted.ceil().min(available).max(MIN_HEIGHT)
+}
+
 #[tauri::command]
 async fn check_for_updates(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<String, String> {
     check_for_updates_now(&app, shared.inner(), true).await
@@ -472,7 +517,8 @@ pub fn run() {
             set_autostart,
             open_about_processes,
             open_link,
-            check_for_updates
+            check_for_updates,
+            fit_window
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -519,12 +565,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Tab Guard");
 
-    app.run(|_app, event| {
+    app.run(|app, event| match event {
         // Closing the last window would normally quit; Tab Guard lives in the
         // menu bar, so only an explicit Quit (which passes an exit code) does.
-        if let RunEvent::ExitRequested { api, code: None, .. } = event {
-            api.prevent_exit();
-        }
+        RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+        // Opening Tab Guard again (from Spotlight or Applications) while it's
+        // running shows the window.
+        RunEvent::Reopen { .. } => show_window(app, None),
+        _ => {}
     });
 }
 
@@ -575,6 +623,19 @@ mod tests {
         assert_eq!(link_url("walk"), Some("https://allenmanzanowight.com/walk?ref=tab-guard"));
         assert_eq!(link_url("https://evil.example"), None);
         assert!(LINKS.iter().all(|(_, url)| url.starts_with("https://")));
+    }
+
+    #[test]
+    fn window_fits_content_within_the_screen() {
+        assert_eq!(fit_height(812.4, 1100.0), 813.0);
+        assert_eq!(fit_height(2400.0, 1100.0), 1100.0, "never taller than the screen");
+        assert_eq!(fit_height(300.0, 1100.0), MIN_HEIGHT);
+    }
+
+    #[test]
+    fn network_trouble_reads_plainly() {
+        let e = tauri_plugin_updater::Error::Network("timed out".into());
+        assert_eq!(update_error(&e), "no connection to GitHub. Tab Guard will try again later.");
     }
 
     #[test]

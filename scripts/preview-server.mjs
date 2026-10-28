@@ -45,6 +45,7 @@ const mock = `
     set_spared: () => {},
     open_link: () => {},
     check_for_updates: () => "Tab Guard 1.0.0 is the latest version (checked 09:16)",
+    fit_window: () => {},
     open_about_processes: () =>
       "Asked Firefox to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.",
   };
