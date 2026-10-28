@@ -825,6 +825,52 @@ mod tests {
     }
 
     #[test]
+    fn new_limits_for_one_firefox_end_the_pause() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        run(&mut g, &crowd(&[], 0), t);
+        run(&mut g, &crowd(&[1], 900), t + secs(61));
+        assert!(g.snapshot.total_hold.is_some());
+        let own = crate::config::Limits { warn_mb: 1024, kill_mb: 2048, total_mb: 12 * 1024, total_min_victim_mb: 400 };
+        g.apply_config(Config {
+            browser_limits: [("/Applications/Firefox.app".to_string(), own)].into(),
+            ..g.config.clone()
+        });
+        assert_eq!(g.events().next().unwrap().text, "The whole-browser limit is back on, with your new settings");
+        run(&mut g, &crowd(&[1], 900), t + secs(62));
+        assert!(g.snapshot.total_hold.is_none());
+        assert_eq!(g.snapshot.over, 0, "10.5 GB is under this Firefox's new 12 GB limit");
+    }
+
+    #[test]
+    fn both_pauses_are_shown_when_both_firefoxes_pause() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        run_two(&mut g, &two_crowds(&[], [0, 0]), t);
+        run_two(&mut g, &two_crowds(&[1], [900, 0]), t + secs(61)); // Firefox pauses; Nightly closes 101
+        run_two(&mut g, &two_crowds(&[1, 101], [900, 900]), t + secs(122)); // Nightly grew it back
+        let hold = g.snapshot.total_hold.clone().expect("paused");
+        assert!(hold.starts_with("Whole-browser limit for Firefox paused"), "{hold}");
+        assert!(hold.contains(". Whole-browser limit for Firefox Nightly paused"), "{hold}");
+        assert_eq!(g.snapshot.over, 0, "neither closes while paused");
+    }
+
+    #[test]
+    fn closes_name_the_firefox_when_several_run() {
+        let mut g = guard(Mode::Watch);
+        let nightly = Proc { browser: 1, ..tab(101, 500) };
+        run_two(&mut g, &[tab(1, 500), nightly], Instant::now());
+        g.close_by_user(101, &mut |_| {}).unwrap();
+        assert_eq!(g.events().next().unwrap().text, "You closed Firefox Nightly tab process 101 (0.5 GB)");
+
+        // And what a pass reports, for the notification.
+        let mut g = guard(Mode::Close);
+        let nightly = Proc { browser: 1, ..tab(102, 3000) };
+        let closed = g.pass(&[nightly], &[browser(0, "Firefox"), browser(1, "Firefox Nightly")], Instant::now(), &mut |_| {});
+        assert_eq!(closed.unwrap().browser, "Firefox Nightly");
+    }
+
+    #[test]
     fn lists_running_and_saved_copies_for_settings() {
         let mut g = guard(Mode::Watch);
         let saved = crate::config::Limits { warn_mb: 500, kill_mb: 900, total_mb: 0, total_min_victim_mb: 400 };

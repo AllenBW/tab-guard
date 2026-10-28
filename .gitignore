@@ -3,3 +3,5 @@ src-tauri/target/
 src-tauri/gen/
 .DS_Store
 CLAUDE.md
+test-results/
+playwright-report/

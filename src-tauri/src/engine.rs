@@ -390,6 +390,30 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_over_its_limit_in_one_firefox_doesnt_stop_the_other() {
+        // Firefox has a 3 GB tab (over its per-tab limit); Nightly is over 8 GB.
+        let (mut procs, browsers) = two(0, 11);
+        procs.insert(0, tab(1, 3000, 0.0));
+        let e = evaluate(&cfg(Mode::Watch), &procs, &browsers, &HashSet::new(), true, &HashSet::new());
+        assert_eq!(status(&e, 1), Status::Over);
+        let over: Vec<u32> = e.rows.iter().filter(|r| r.status == Status::Over).map(|r| r.proc.pid).collect();
+        assert_eq!(over.len(), 2, "Firefox's big tab and one Nightly tab: {over:?}");
+        assert!(over.iter().any(|p| *p >= 200));
+    }
+
+    #[test]
+    fn each_firefox_has_its_own_smallest_tab_to_close() {
+        // Both copies are over 8 GB with only 900 MB tabs.
+        let (procs, browsers) = two(10, 10);
+        let fussy = Limits { warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 1000 };
+        let c = Config { browser_limits: [(browsers[0].key.clone(), fussy)].into(), ..cfg(Mode::Watch) };
+        let e = evaluate(&c, &procs, &browsers, &HashSet::new(), true, &HashSet::new());
+        let over: Vec<u32> = e.rows.iter().filter(|r| r.status == Status::Over).map(|r| r.proc.pid).collect();
+        assert_eq!(over.len(), 1);
+        assert!(over[0] >= 200, "Firefox won't close a tab under 1000 MB; Nightly will");
+    }
+
+    #[test]
     fn gb_formats_one_decimal() {
         assert_eq!(gb(1024), "1.0 GB");
         assert_eq!(gb(1536), "1.5 GB");

@@ -413,16 +413,21 @@ async fn open_about_processes(browser: Option<u32>, shared: State<'_, Arc<Shared
 async fn install_update(app: &AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = match updater.check().await {
-        Ok(Some(update)) => update,
-        // No release manifest on GitHub (nothing published yet) means
-        // there's nothing newer to install.
-        Ok(None) | Err(tauri_plugin_updater::Error::ReleaseNotFound) => return Ok(None),
-        Err(e) => return Err(update_error(&e)),
-    };
+    let Some(update) = found_update(updater.check().await)? else { return Ok(None) };
     let version = update.version.clone();
     update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     Ok(Some(version))
+}
+
+/// What a check's result means: an update to install, nothing newer, or an
+/// error to show. No release manifest on GitHub (nothing published yet)
+/// means there's nothing newer.
+fn found_update<T>(checked: Result<Option<T>, tauri_plugin_updater::Error>) -> Result<Option<T>, String> {
+    match checked {
+        Ok(found) => Ok(found),
+        Err(tauri_plugin_updater::Error::ReleaseNotFound) => Ok(None),
+        Err(e) => Err(update_error(&e)),
+    }
 }
 
 /// Words for a failed check. Network trouble is the usual cause, and the
@@ -647,6 +652,20 @@ mod tests {
         assert_eq!(fit_height(812.4, 1100.0), 813.0);
         assert_eq!(fit_height(2400.0, 1100.0), 1100.0, "never taller than the screen");
         assert_eq!(fit_height(300.0, 1100.0), MIN_HEIGHT);
+    }
+
+    #[test]
+    fn no_published_release_means_up_to_date() {
+        use tauri_plugin_updater::Error;
+        assert_eq!(found_update(Ok(Some(7))), Ok(Some(7)));
+        assert_eq!(found_update::<u8>(Ok(None)), Ok(None));
+        assert_eq!(found_update::<u8>(Err(Error::ReleaseNotFound)), Ok(None));
+        assert_eq!(
+            found_update::<u8>(Err(Error::Network("timed out".into()))),
+            Err("no connection to GitHub. Tab Guard will try again later.".into())
+        );
+        // Anything else (a bad signature, say) is reported as it is.
+        assert!(found_update::<u8>(Err(Error::UnsupportedOs)).unwrap_err().len() > 5);
     }
 
     #[test]

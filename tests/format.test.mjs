@@ -1,7 +1,10 @@
 // node --test tests/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc } from "../src/format.js";
+import {
+  gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc,
+  keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices,
+} from "../src/format.js";
 
 const config = {
   enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
@@ -123,4 +126,49 @@ test("limits can be set for one copy of Firefox", () => {
   // A blank field keeps that copy's own value, not the main one.
   const again = settingsToConfig(c, { ...form, total_gb: "" }, dev);
   assert.equal(again.browser_limits[dev].total_mb, 4096);
+});
+
+const fx = { id: 10, name: "Firefox" };
+const dev = { id: 20, name: "Firefox Developer Edition" };
+const names = { 10: "Firefox", 20: "Firefox Developer Edition" };
+
+test("the process filter", () => {
+  const rows = [{ pid: 1, browser: 10 }, { pid: 2, browser: 20 }, { pid: 3, browser: 10 }];
+  assert.deepEqual(filterRows(rows, null), rows);
+  assert.deepEqual(filterRows(rows, 20).map((r) => r.pid), [2]);
+  assert.deepEqual(filterChoices([fx, dev]), [["all", "All"], ["10", "Firefox"], ["20", "Developer Edition"]]);
+  assert.equal(keptFilter(20, [fx, dev]), 20);
+  assert.equal(keptFilter(20, [fx, { id: 30, name: "Firefox Nightly" }]), null, "back to All once it quits");
+  assert.equal(keptFilter(10, [fx]), null, "no filter with one Firefox");
+});
+
+test("row labels say which Firefox only when several run", () => {
+  const tab = { pid: 7, kind: "tab", browser: 20, mem_mb: 1536 };
+  assert.deepEqual(rowBadges(tab, names, false), [{ text: "Tab" }]);
+  assert.deepEqual(rowBadges(tab, names, true), [{ text: "Tab" }, { text: "Developer Edition", browser: true }]);
+  assert.deepEqual(rowBadges({ ...tab, kind: "main" }, names, true), [{ text: "Developer Edition" }]);
+  assert.deepEqual(rowBadges({ ...tab, kind: "main" }, names, false), [{ text: "Firefox" }]);
+  assert.deepEqual(rowBadges({ ...tab, browser: 99 }, names, true)[1].text, "Firefox", "an unknown copy reads as Firefox");
+  assert.equal(tabLabel(tab, names, false), "tab process 7 (1.5 GB)");
+  assert.equal(tabLabel(tab, names, true), "Firefox Developer Edition tab process 7 (1.5 GB)");
+});
+
+test("the Limits for picker", () => {
+  const t = (key, name, running = true, own = false) => ({ key, name, running, own });
+  const release = t("/A/Firefox.app", "Firefox");
+  const devEd = t("/A/Firefox Developer Edition.app", "Firefox Developer Edition");
+  // One Firefox with no limits of its own: no picker, the main limits.
+  assert.deepEqual(limitChoice([release], null), { choosing: false, key: null, name: null });
+  assert.deepEqual(limitChoice([], "/A/Firefox.app"), { choosing: false, key: null, name: null });
+  // Two: the first is picked, and a choice sticks.
+  assert.equal(limitChoice([release, devEd], null).key, "/A/Firefox.app");
+  assert.equal(limitChoice([release, devEd], devEd.key).name, "Firefox Developer Edition");
+  // The chosen copy quit and has no own limits: back to the first.
+  assert.equal(limitChoice([release, t("/A/Firefox Nightly.app", "Firefox Nightly")], devEd.key).key, release.key);
+  // One copy with limits of its own still shows the picker, so it's clear whose they are.
+  assert.equal(limitChoice([{ ...devEd, own: true }], null).choosing, true);
+  assert.deepEqual(limitChoices([release, t("/A/Firefox Nightly.app", "Firefox Nightly", false, true)]), [
+    ["/A/Firefox.app", "Firefox", ""],
+    ["/A/Firefox Nightly.app", "Nightly (not running)", "not-running"],
+  ]);
 });

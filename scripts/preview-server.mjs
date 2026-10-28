@@ -1,12 +1,14 @@
 // Serves the window's UI in a normal browser with a fake Tauri backend, so
 // the layout can be checked without building the app.
 //   node scripts/preview-server.mjs   ->  http://localhost:5174
+// Every command the page sends is kept in window.__calls, for the browser
+// tests in tests/ui.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 
 const root = new URL("../src/", import.meta.url).pathname;
-const port = 5174;
+const port = Number(process.env.PORT) || 5174;
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 
 const mock = `
@@ -59,7 +61,11 @@ const mock = `
     open_about_processes: () =>
       "Asked Firefox to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.",
   };
-  window.__TAURI__ = { core: { invoke: async (cmd, args) => { console.log("invoke", cmd, args); return handlers[cmd]?.(args); } } };
+  window.__calls = [];
+  window.__TAURI__ = { core: { invoke: async (cmd, args) => {
+    window.__calls.push([cmd, args ?? null]);
+    return handlers[cmd]?.(args);
+  } } };
 })();`;
 
 createServer(async (req, res) => {
