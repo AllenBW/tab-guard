@@ -5,10 +5,11 @@ mod config;
 mod engine;
 mod guard;
 mod sampler;
+mod usage;
 
 use config::{Config, Mode};
 use engine::gb;
-use guard::{Guard, Snapshot, View};
+use guard::{local_time, unix_now, Guard, Snapshot, View};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,8 @@ struct Shared {
     wake: Mutex<Sender<()>>,
     /// Tracked here so the monitor never has to ask the window (a main-thread call).
     window_open: AtomicBool,
+    /// The latest update check, in words, for the settings tab.
+    update_status: Mutex<String>,
 }
 
 impl Shared {
@@ -214,11 +217,14 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     let mut last_tray: Option<(Option<String>, String, String)> = None;
     loop {
         let procs = sampler.sample();
-        let (cfg, snap, closed) = {
+        let (cfg, snap, closed, counted) = {
             let mut g = shared.guard.lock().unwrap();
             let closed = g.pass(&procs, Instant::now(), &mut close_process);
-            (g.config.clone(), g.snapshot.clone(), closed)
+            (g.config.clone(), g.snapshot.clone(), closed, g.take_usage())
         };
+        if cfg.share_usage {
+            usage::send(counted.into_iter().map(usage::describe).collect());
+        }
         if let (Some(c), true) = (&closed, cfg.notify_on_close) {
             notify(&format!("Closed a Firefox tab using {}. Click Restore on the crashed tab to reload it.", gb(c.mem_mb)));
         }
@@ -245,9 +251,25 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
 
 // ---------------------------------------------------------------- commands
 
+/// What the window shows: the guard's state plus app-level details.
+#[derive(serde::Serialize)]
+struct WindowView {
+    #[serde(flatten)]
+    view: View,
+    version: String,
+    usage_available: bool,
+    update_status: String,
+}
+
 #[tauri::command]
-fn get_view(shared: State<'_, Arc<Shared>>) -> View {
-    shared.guard.lock().unwrap().view()
+fn get_view(app: AppHandle, shared: State<'_, Arc<Shared>>) -> WindowView {
+    let view = shared.guard.lock().unwrap().view();
+    WindowView {
+        view,
+        version: app.package_info().version.to_string(),
+        usage_available: usage::available(),
+        update_status: shared.update_status.lock().unwrap().clone(),
+    }
 }
 
 #[tauri::command]
@@ -339,12 +361,81 @@ async fn open_about_processes() -> Result<String, String> {
     }
 }
 
+// ---------------------------------------------------------------- updates
+
+/// Check for a newer release and install it. Returns the new version, if any.
+async fn install_update(app: &AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let version = update.version.clone();
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    Ok(Some(version))
+}
+
+fn set_update_status(shared: &Shared, text: String) {
+    *shared.update_status.lock().unwrap() = text;
+}
+
+/// Run one check and report it. After an install, restart into the new
+/// version: right away when the user asked, otherwise once the window is
+/// closed so it doesn't vanish under them.
+async fn check_for_updates_now(app: &AppHandle, shared: &Arc<Shared>, by_user: bool) -> Result<String, String> {
+    let current = app.package_info().version.to_string();
+    let at = || local_time(unix_now())[11..16].to_string();
+    match install_update(app).await {
+        Ok(None) => {
+            let text = format!("Tab Guard {current} is the latest version (checked {})", at());
+            set_update_status(shared, text.clone());
+            Ok(text)
+        }
+        Ok(Some(version)) => {
+            shared.guard.lock().unwrap().push_event("info", format!("Updated from {current} to {version}"));
+            let text = format!("Installed Tab Guard {version}. Restarting…");
+            set_update_status(shared, text.clone());
+            let (app, shared) = (app.clone(), shared.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(2));
+                while !by_user && shared.window_open.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_secs(10));
+                }
+                app.restart();
+            });
+            Ok(text)
+        }
+        Err(e) => {
+            let text = format!("Couldn't check for updates: {e}");
+            set_update_status(shared, text.clone());
+            Err(text)
+        }
+    }
+}
+
+/// A minute after launch, then every 6 hours, while automatic updates are on.
+fn update_loop(app: AppHandle, shared: Arc<Shared>) {
+    std::thread::sleep(Duration::from_secs(60));
+    loop {
+        if shared.guard.lock().unwrap().config.auto_update {
+            let _ = tauri::async_runtime::block_on(check_for_updates_now(&app, &shared, false));
+        }
+        std::thread::sleep(Duration::from_secs(6 * 3600));
+    }
+}
+
+#[tauri::command]
+async fn check_for_updates(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    check_for_updates_now(&app, shared.inner(), true).await
+}
+
 // ---------------------------------------------------------------- app
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_view,
             save_config,
@@ -352,7 +443,8 @@ pub fn run() {
             set_spared,
             get_autostart,
             set_autostart,
-            open_about_processes
+            open_about_processes,
+            check_for_updates
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -372,16 +464,28 @@ pub fn run() {
             let mut guard = Guard::new(config.clone(), Some(config_dir), Some(log_dir.join("Tab Guard.log")));
             guard.push_event("info", format!("Started in “{}” mode", config.mode.label()));
             let (tx, rx) = mpsc::channel();
-            let shared =
-                Arc::new(Shared { guard: Mutex::new(guard), wake: Mutex::new(tx), window_open: AtomicBool::new(false) });
+            let shared = Arc::new(Shared {
+                guard: Mutex::new(guard),
+                wake: Mutex::new(tx),
+                window_open: AtomicBool::new(false),
+                update_status: Mutex::new(String::new()),
+            });
             app.manage(shared.clone());
             app.manage(build_tray(app.handle(), &config)?);
 
-            if first_run {
+            // The welcome card asks about usage sharing, so show it until
+            // it's been answered, including on installs from before it existed.
+            if first_run || !config.welcomed {
                 show_window(app.handle());
             }
+            if config.share_usage {
+                usage::send(vec![usage::started(config.mode)]);
+            }
             let handle = app.handle().clone();
+            let for_updates = shared.clone();
             std::thread::spawn(move || monitor(handle, shared, rx));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || update_loop(handle, for_updates));
             Ok(())
         })
         .build(tauri::generate_context!())

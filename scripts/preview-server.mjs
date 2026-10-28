@@ -15,7 +15,7 @@ const mock = `
   const tab = (pid, mem_mb, cpu, age_secs, growth_mb_per_min = 0) =>
     ({ pid, kind: "tab", mem_mb, cpu, age_secs, growth_mb_per_min, status: "ok", reason: null, action: null });
   let config = { enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
-    total_backoff_mins: 15, total_max_per_hour: 3,
+    total_backoff_mins: 15, total_max_per_hour: 3, share_usage: false, auto_update: true, welcomed: false,
     interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false };
   const rows = [
     { ...tab(48991, 2210, 0.4, 32358, 14), status: "over", reason: "Over the 2.0 GB per-tab limit", action: "Would close" },
@@ -33,7 +33,8 @@ const mock = `
   ];
   let autostart = true;
   const handlers = {
-    get_view: () => ({ config, events, spared: [48984], log_path: "~/Library/Logs/Tab Guard.log",
+    get_view: () => ({ config, events, version: "1.0.0", usage_available: true,
+      update_status: "Tab Guard 1.0.0 is the latest version (checked 09:15)", spared: [48984], log_path: "~/Library/Logs/Tab Guard.log",
       snapshot: { firefox_running: true, total_mb: 8944, tab_count: 24, flagged: 1, over: 1, rows, cooldown_secs: 0, checked_at: now(),
         total_hold: config.mode === "watch" ? null
           : "Whole-browser limit paused until 08:31: closing a 0.9 GB tab didn't bring Firefox down (8.7 GB before, 9.7 GB now)" } }),
@@ -42,6 +43,7 @@ const mock = `
     set_autostart: (a) => (autostart = a.enabled),
     close_tab: () => {},
     set_spared: () => {},
+    check_for_updates: () => "Tab Guard 1.0.0 is the latest version (checked 09:16)",
     open_about_processes: () =>
       "Asked Firefox to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.",
   };

@@ -32,6 +32,24 @@
     <div id="banner" class="banner" hidden></div>
     <div id="toast" class="toast" role="status" hidden></div>
 
+    <section id="welcome" class="welcome" hidden>
+      <h2>Welcome to Tab Guard</h2>
+      <p>
+        Tab Guard watches Firefox's tab processes from the menu bar. When one grows past your limits it can
+        close it, and Firefox shows that tab as crashed with a <b>Restore</b> button. New installs start in
+        <b>Watch only</b>, so nothing is closed until you pick another mode above.
+      </p>
+      <p>
+        The first time you use <b>Which site is which?</b>, macOS asks whether Tab Guard may control Firefox.
+        That's only used to open Firefox's about:processes page.
+      </p>
+      <label class="check usage-row"><input type="checkbox" id="welcome-usage" />
+        <span>Share anonymous usage counts<br />
+        <small class="muted">Which rule closed a tab, which mode you use, and your app and macOS versions.
+        Never websites, process names or memory figures. Off unless you tick this.</small></span></label>
+      <button id="welcome-done" class="primary">Got it</button>
+    </section>
+
     <nav class="tabs" role="tablist">
       <button role="tab" data-panel="processes" aria-selected="true">Processes</button>
       <button role="tab" data-panel="settings">Limits &amp; settings</button>
@@ -103,6 +121,16 @@
             <legend>General</legend>
             <label class="check"><input type="checkbox" name="notify_on_close" /> Show a notification when a tab is closed</label>
             <label class="check"><input type="checkbox" id="autostart" /> Start Tab Guard when I log in</label>
+            <label class="check usage-row"><input type="checkbox" name="share_usage" /> Share anonymous usage counts</label>
+            <small class="usage-row">Which rule closed a tab, which mode you use, and your app and macOS versions.
+              Never websites, process names or memory figures.</small>
+          </fieldset>
+          <fieldset>
+            <legend>Updates</legend>
+            <label class="check"><input type="checkbox" name="auto_update" /> Install updates automatically</label>
+            <div class="field"><span id="version"></span>
+              <button type="button" id="check-updates">Check for updates</button></div>
+            <small id="update-status"></small>
           </fieldset>
           <p id="saved" class="muted small" aria-live="polite"></p>
         </form>

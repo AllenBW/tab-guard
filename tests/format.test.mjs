@@ -5,7 +5,7 @@ import { gb, mbOrGb, duration, growth, summaryParts, bannerText, settingsToConfi
 
 const config = {
   enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
-  total_backoff_mins: 15, total_max_per_hour: 3,
+  total_backoff_mins: 15, total_max_per_hour: 3, share_usage: false, auto_update: true, welcomed: true,
   interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false,
 };
 
@@ -62,7 +62,7 @@ test("settings form to config", () => {
   const form = {
     warn_gb: "1.5", kill_gb: "3", total_gb: "0", total_min_victim_mb: "250", prefer_idle: false,
     idle_cpu_percent: "5", interval_secs: "30", kill_cooldown_secs: "90", notify_on_close: true,
-    total_backoff_mins: "30", total_max_per_hour: "0",
+    total_backoff_mins: "30", total_max_per_hour: "0", share_usage: true, auto_update: false,
   };
   const c = settingsToConfig(config, form);
   assert.equal(c.warn_mb, 1536);
@@ -74,6 +74,9 @@ test("settings form to config", () => {
   assert.equal(c.notify_on_close, true);
   assert.equal(c.total_backoff_mins, 30);
   assert.equal(c.total_max_per_hour, 0, "0 turns the cap off");
+  assert.equal(c.share_usage, true);
+  assert.equal(c.auto_update, false);
+  assert.equal(c.welcomed, true, "the form never resets the welcome card");
   assert.equal(c.mode, "watch", "keeps fields the form doesn't have");
 });
 

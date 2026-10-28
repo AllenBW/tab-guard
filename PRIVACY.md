@@ -1,0 +1,44 @@
+# Privacy
+
+Tab Guard runs entirely on your Mac. It reads the memory and CPU use of Firefox's processes
+from macOS, and keeps its settings and activity log in your home folder. It doesn't read your
+browsing: it never sees which website runs in which process.
+
+## Anonymous usage counts (off unless you turn them on)
+
+Tab Guard asks once, in its welcome card, whether to share anonymous usage counts. You can
+change your answer any time under **Limits & settings → General**. While it's off, nothing is
+sent.
+
+While it's on, Tab Guard sends these events to [Aptabase](https://aptabase.com), an
+open-source, privacy-focused analytics service:
+
+| Event | When | Details sent |
+|---|---|---|
+| `app_started` | Tab Guard starts | the mode (Watch only, Warn then close, Close at limit) |
+| `tab_closed` | a tab is closed | which rule closed it: per-tab limit, whole-browser limit, or you |
+| `whole_browser_paused` | the whole-browser limit backs off | why: closing didn't help, or the hourly cap |
+| `mode_changed` | you switch modes | the new mode |
+
+Every event also carries the Tab Guard version, the macOS version, and a random session ID
+that's new each time Tab Guard starts. Nothing ties sessions together or to you.
+
+Never sent: website addresses, tab titles, process names or IDs, memory or CPU figures, your
+name, account, computer name, or any lasting identifier. Aptabase processes the IP address and
+user agent of each request in memory only and never stores them; to count daily users it derives
+a pseudonymous ID from them with a salt it rotates every 24 hours, so days can't be linked. See
+[Aptabase's privacy policy](https://aptabase.com/legal/privacy).
+
+The code that sends these is in [`src-tauri/src/usage.rs`](src-tauri/src/usage.rs).
+
+## Updates
+
+With **Install updates automatically** on (the default), Tab Guard checks GitHub for a new
+release a minute after it starts and every 6 hours. That request is an ordinary download from
+github.com and includes no information about you or your Firefox. Each update is
+signature-checked before it's installed.
+
+## Controlling Firefox
+
+macOS asks once whether Tab Guard may control Firefox. That permission is only used by the
+**Which site is which?** button, to ask Firefox to open its `about:processes` page.

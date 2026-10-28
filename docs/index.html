@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tab Guard</title>
+  <meta name="description" content="A free Mac menu-bar app that keeps Firefox tabs from eating your memory." />
+  <link rel="icon" href="icon.png" />
+  <style>
+    :root {
+      --bg: #f6f7f8; --surface: #fff; --text: #1c2024; --muted: #5f676d; --border: #e1e4e8;
+      --accent: #0f766e; --accent-text: #fff;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #141618; --surface: #1c1f22; --text: #eceef0; --muted: #9ba1a6; --border: #2f3337;
+        --accent: #3fbfb2; --accent-text: #0b1f1d; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 56px 16px 72px; }
+    header { display: flex; gap: 20px; align-items: center; }
+    header img { width: 88px; height: 88px; flex: none; }
+    h1 { font-size: 40px; margin: 0; letter-spacing: -0.02em; }
+    .lede { font-size: 20px; color: var(--muted); margin: 4px 0 0; }
+    .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 32px 0 8px; }
+    .button { background: var(--accent); color: var(--accent-text); text-decoration: none; font-weight: 600;
+      padding: 12px 22px; border-radius: 10px; }
+    .muted { color: var(--muted); font-size: 15px; }
+    h2 { font-size: 22px; margin: 44px 0 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+    .card h3 { margin: 0 0 6px; font-size: 17px; }
+    .card p { margin: 0; color: var(--muted); font-size: 15px; }
+    a { color: var(--accent); }
+    code { font: 15px ui-monospace, Menlo, monospace; }
+    footer { margin-top: 56px; color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <img src="icon.png" alt="" />
+      <div>
+        <h1>Tab Guard</h1>
+        <p class="lede">Keeps Firefox tabs from eating your Mac's memory. Free and open source.</p>
+      </div>
+    </header>
+
+    <div class="cta">
+      <a class="button" href="https://github.com/AllenBW/tab-guard/releases/latest">Download for Mac</a>
+      <span class="muted">macOS 13 or later · Apple silicon and Intel · signed and notarized</span>
+    </div>
+
+    <p>
+      One runaway tab can push Firefox past 10 GB and send your Mac into swap. macOS has no way to cap an
+      app's memory, so Tab Guard watches instead: it sits in the menu bar, checks Firefox's tab processes,
+      and, if you let it, closes the one that grew past your limit. Firefox shows that tab as crashed, with
+      a <b>Restore</b> button that brings it back.
+    </p>
+
+    <h2>How it works</h2>
+    <div class="grid">
+      <div class="card"><h3>Watch first</h3><p>It starts in Watch only: it shows what it would close and why, and closes nothing until you pick a mode.</p></div>
+      <div class="card"><h3>Your limits</h3><p>A per-tab limit (2 GB by default) and a whole-browser limit (8 GB) that prefers idle tabs and never picks small ones.</p></div>
+      <div class="card"><h3>Knows when to stop</h3><p>If closing a tab doesn't bring Firefox down, it backs off, and it never closes more than a few tabs an hour.</p></div>
+      <div class="card"><h3>Stays out of the way</h3><p>About 16 MB of memory and no noticeable CPU. Turn it off or change modes from the menu bar.</p></div>
+    </div>
+
+    <h2>Privacy</h2>
+    <p>
+      Everything happens on your Mac. Tab Guard never sees which website runs in which tab. It can share
+      anonymous usage counts, such as which rule closed a tab, but only if you tick the box; it's off
+      otherwise. The <a href="https://github.com/AllenBW/tab-guard/blob/main/PRIVACY.md">privacy notes</a>
+      list everything that's sent.
+    </p>
+
+    <h2>Install</h2>
+    <p>
+      Download the <code>.dmg</code>, open it, and drag Tab Guard to Applications. It updates itself after
+      that. Prefer the source? <a href="https://github.com/AllenBW/tab-guard">It's on GitHub</a> under the
+      MIT license.
+    </p>
+
+    <footer>Made by Allen Manzano-Wight · <a href="https://github.com/AllenBW/tab-guard/issues">Report a problem</a></footer>
+  </main>
+</body>
+</html>
