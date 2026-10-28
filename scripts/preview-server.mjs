@@ -18,7 +18,9 @@ const mock = `
     ({ pid, browser, kind: "tab", mem_mb, cpu, age_secs, growth_mb_per_min, status: "ok", reason: null, action: null });
   let config = { enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
     total_backoff_mins: 15, total_max_per_hour: 3, share_usage: false, auto_update: true, welcomed: false,
-    interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false };
+    interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false,
+    browser_limits: {} };
+  const firefoxKey = "/Applications/Firefox.app", nightlyKey = "/Applications/Firefox Nightly.app";
   const rows = [
     { ...tab(48991, 2210, 0.4, 32358, 14), status: "over", reason: "Over the 2.0 GB per-tab limit", action: "Would close" },
     { ...tab(48983, 1063, 7.7, 32359, 3), status: "warn", reason: "Past the 1.0 GB warning level" },
@@ -36,6 +38,9 @@ const mock = `
   let autostart = true;
   const handlers = {
     get_view: () => ({ config, events, version: "1.0.0", usage_available: true,
+      limit_targets: (several
+        ? [[firefoxKey, "Firefox", true], [nightlyKey, "Firefox Nightly", true]]
+        : [[firefoxKey, "Firefox", true]]).map(([key, name, running]) => ({ key, name, running, own: key in config.browser_limits })),
       update_status: "Tab Guard 1.0.0 is the latest version (checked 09:15)", spared: [48984], log_path: "~/Library/Logs/Tab Guard.log",
       snapshot: { firefox_running: true, total_mb: 8944, tab_count: 24, flagged: 1, over: 1, rows, cooldown_secs: 0, checked_at: now(),
         browsers: several

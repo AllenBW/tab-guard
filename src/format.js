@@ -55,16 +55,32 @@ export function bannerText(config, s) {
   return null;
 }
 
+/** The limits for one copy of Firefox (by its key), or the main limits for
+ *  `null` and for copies without their own. */
+export function limitsFor(config, key) {
+  const own = key != null ? config.browser_limits?.[key] : null;
+  if (own) return own;
+  const { warn_mb, kill_mb, total_mb, total_min_victim_mb } = config;
+  return { warn_mb, kill_mb, total_mb, total_min_victim_mb };
+}
+
 /** Turn the settings form's values (GB, strings) back into a config. Blank or
- *  invalid fields keep their current value. */
-export function settingsToConfig(current, form) {
+ *  invalid fields keep their current value. The limits go to the copy of
+ *  Firefox `target` names (a key), or to the main limits when it's null. */
+export function settingsToConfig(current, form, target = null) {
   const num = (v, fallback) => (v !== "" && v != null && Number.isFinite(+v) ? +v : fallback);
+  const was = limitsFor(current, target);
+  const limits = {
+    warn_mb: Math.round(num(form.warn_gb, was.warn_mb / 1024) * 1024),
+    kill_mb: Math.round(num(form.kill_gb, was.kill_mb / 1024) * 1024),
+    total_mb: Math.round(num(form.total_gb, was.total_mb / 1024) * 1024),
+    total_min_victim_mb: Math.round(num(form.total_min_victim_mb, was.total_min_victim_mb)),
+  };
+  const placed =
+    target == null ? limits : { browser_limits: { ...(current.browser_limits ?? {}), [target]: limits } };
   return {
     ...current,
-    warn_mb: Math.round(num(form.warn_gb, current.warn_mb / 1024) * 1024),
-    kill_mb: Math.round(num(form.kill_gb, current.kill_mb / 1024) * 1024),
-    total_mb: Math.round(num(form.total_gb, current.total_mb / 1024) * 1024),
-    total_min_victim_mb: Math.round(num(form.total_min_victim_mb, current.total_min_victim_mb)),
+    ...placed,
     total_backoff_mins: Math.round(num(form.total_backoff_mins, current.total_backoff_mins)),
     total_max_per_hour: Math.round(num(form.total_max_per_hour, current.total_max_per_hour)),
     prefer_idle: Boolean(form.prefer_idle),
