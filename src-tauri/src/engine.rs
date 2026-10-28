@@ -34,7 +34,7 @@ pub struct Row {
 #[derive(Debug, Clone)]
 pub struct Evaluation {
     pub rows: Vec<Row>,
-    /// Every copy of Firefox together.
+    /// Every browser together.
     pub total_mb: u64,
     /// The tab to close this pass, with the reason.
     pub close: Option<(u32, String)>,
@@ -46,7 +46,7 @@ pub fn gb(mb: u64) -> String {
     format!("{:.1} GB", mb as f64 / 1024.0)
 }
 
-/// Memory used by each copy of Firefox, by browser id.
+/// Memory used by each browser, by browser id.
 pub fn totals(procs: &[Proc]) -> HashMap<u32, u64> {
     let mut t = HashMap::new();
     for p in procs {
@@ -56,7 +56,7 @@ pub fn totals(procs: &[Proc]) -> HashMap<u32, u64> {
 }
 
 /// `procs` must be sorted biggest first (the sampler does this). The
-/// whole-browser limit applies to each copy of Firefox in `browsers`
+/// whole-browser limit applies to each browser in `browsers`
 /// separately, and picks no tab in the ones listed in `held`.
 pub fn evaluate(
     cfg: &Config,
@@ -74,7 +74,7 @@ pub fn evaluate(
         .map(|p| Row { proc: p.clone(), status: Status::Ok, reason: None, action: None })
         .collect();
 
-    // Each copy of Firefox has its own limits.
+    // Each browser has its own limits.
     let limits: HashMap<u32, Limits> = browsers.iter().map(|b| (b.id, cfg.limits_for(&b.key))).collect();
     let limits_of = |browser: u32| limits.get(&browser).copied().unwrap_or_else(|| cfg.limits_for(""));
 
@@ -94,7 +94,7 @@ pub fn evaluate(
         }
     }
 
-    // Whole-browser limit, for each copy of Firefox: if nothing in it is
+    // Whole-browser limit, for each browser: if nothing in it is
     // already over its own limit, pick its biggest eligible tab, preferring
     // an idle one.
     let mut total_victims = Vec::new();

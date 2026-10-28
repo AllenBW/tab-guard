@@ -1,6 +1,6 @@
 //! Tab Guard's state between checks: settings, spared tabs, the activity
-//! log, the cooldown, and the whole-browser limit's back-off for each copy of
-//! Firefox. `pass` runs one check's bookkeeping. Nothing here touches Tauri,
+//! log, the cooldown, and the whole-browser limit's back-off for each
+//! browser. `pass` runs one check's bookkeeping. Nothing here touches Tauri,
 //! so it can be tested directly.
 
 use crate::config::{Config, Mode};
@@ -39,23 +39,23 @@ pub struct BrowserSummary {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
     pub browser_running: bool,
-    /// Every copy of Firefox together.
+    /// Every browser together.
     pub total_mb: u64,
     pub tab_count: usize,
     pub flagged: usize,
     pub over: usize,
     pub rows: Vec<Row>,
-    /// The copies of Firefox running, oldest first. Usually just one.
+    /// The browsers running, oldest first. Usually just one.
     pub browsers: Vec<BrowserSummary>,
     /// Seconds until another close is allowed, if a cooldown is running.
     pub cooldown_secs: u64,
     /// Why the whole-browser limit is paused, and until when, if it is (for
-    /// any copy of Firefox).
+    /// any browser).
     pub total_hold: Option<String>,
     pub checked_at: u64,
 }
 
-/// A copy of Firefox whose limits can be set in the window.
+/// A browser whose limits can be set in the window.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct LimitTarget {
     /// `Browser::key`, as in `Config::browser_limits`.
@@ -93,16 +93,16 @@ pub enum Usage {
 pub struct Closed {
     pub pid: u32,
     pub mem_mb: u64,
-    /// The name of the Firefox it belonged to.
+    /// The name of the browser it belonged to.
     pub browser: String,
 }
 
-/// The whole-browser limit's state for one copy of Firefox.
+/// The whole-browser limit's state for one browser.
 #[derive(Default)]
 struct TotalLimit {
     /// When each close for this limit in the last hour happened.
     closes: VecDeque<Instant>,
-    /// The latest close, still to be judged: (when, this Firefox's total just
+    /// The latest close, still to be judged: (when, this browser's total just
     /// before, the tab's size).
     unjudged: Option<(Instant, u64, u64)>,
     /// Paused until then; the text says why.
@@ -120,9 +120,9 @@ pub struct Guard {
     /// (pid, status) pairs already written to the activity log.
     logged: HashSet<(u32, Status)>,
     last_close: Option<Instant>,
-    /// The whole-browser limit, for each copy of Firefox by browser id.
+    /// The whole-browser limit, for each browser by browser id.
     limits: HashMap<u32, TotalLimit>,
-    /// The copies of Firefox seen in the latest check.
+    /// The browsers seen in the latest check.
     browsers: Vec<Browser>,
     /// Usage not yet sent.
     usage: Vec<Usage>,
@@ -242,7 +242,7 @@ impl Guard {
         self.last_close.map(|t| cooldown.saturating_sub(now.duration_since(t))).unwrap_or_default()
     }
 
-    /// " for Firefox Nightly" when more than one Firefox is running, so
+    /// " for Firefox Nightly" when more than one browser is running, so
     /// messages say which one they mean; otherwise nothing.
     fn which(&self, browser: u32) -> String {
         match self.browsers.iter().find(|b| b.id == browser) {
@@ -252,7 +252,7 @@ impl Guard {
     }
 
     /// "tab process 123", or "Firefox Nightly tab process 123" when more
-    /// than one Firefox is running.
+    /// than one browser is running.
     fn tab_name(&self, browser: u32, pid: u32) -> String {
         match self.browsers.iter().find(|b| b.id == browser) {
             Some(b) if self.browsers.len() > 1 => format!("{} tab process {pid}", b.name),
@@ -268,9 +268,9 @@ impl Guard {
         lim.hold = Some((until, text));
     }
 
-    /// Pause the whole-browser limit for one Firefox when closing its tabs
+    /// Pause the whole-browser limit for one browser when closing its tabs
     /// isn't bringing it down, or when it has closed its hourly maximum.
-    /// Firefox keeps some memory no tab close can free, so a limit set below
+    /// Browsers keep some memory no tab close can free, so a limit set below
     /// that would otherwise close a tab every cooldown, forever.
     fn update_total_hold(&mut self, b: &Browser, total_mb: u64, now: Instant) {
         let mut lim = self.limits.remove(&b.id).unwrap_or_default();
@@ -294,7 +294,7 @@ impl Guard {
         let over = cfg.total_mb > 0 && total_mb > cfg.total_mb;
 
         // Judge the last close once the cooldown is up, just before the
-        // rule would pick another tab. It helped if this Firefox is under the
+        // rule would pick another tab. It helped if this browser is under the
         // limit, or down by at least half of what the tab was using.
         if let Some((at, before, freed)) = lim.unjudged {
             if now.duration_since(at) >= Duration::from_secs(cfg.kill_cooldown_secs) {
@@ -323,7 +323,7 @@ impl Guard {
         }
     }
 
-    /// One check: judge `procs` (biggest first) from the copies of Firefox
+    /// One check: judge `procs` (biggest first) from the browsers
     /// in `browsers`, log what's new, close at most one tab through `close`,
     /// and update the snapshot.
     pub fn pass(
@@ -334,7 +334,7 @@ impl Guard {
         close: &mut dyn FnMut(u32),
     ) -> Option<Closed> {
         self.browsers = browsers.to_vec();
-        // A Firefox that quit takes its pauses and hourly count with it.
+        // A browser that quit takes its pauses and hourly count with it.
         self.limits.retain(|id, _| browsers.iter().any(|b| b.id == *id));
         let totals = engine::totals(procs);
         // Only a closing mode builds up whole-browser closes to judge.
@@ -385,7 +385,7 @@ impl Guard {
             self.count(Usage::Closed(if eval.close_by_total { "whole-browser" } else { "per-tab" }));
             let name = self.tab_name(browser, *pid);
             self.push_event("closed", format!("Closed {name} ({}): {reason}", gb(mem_mb)));
-            let browser = browsers.iter().find(|b| b.id == browser).map_or("Firefox".into(), |b| b.name.clone());
+            let browser = browsers.iter().find(|b| b.id == browser).map_or("browser".into(), |b| b.name.clone());
             closed = Some(Closed { pid: *pid, mem_mb, browser });
         }
 

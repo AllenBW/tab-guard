@@ -5,8 +5,8 @@
   <!-- Menu-bar app: no Dock icon. -->
   <key>LSUIElement</key>
   <true/>
-  <!-- Shown when Tab Guard first asks Firefox to open about:processes. -->
+  <!-- Shown when Tab Guard first asks a Firefox-family browser to open about:processes. -->
   <key>NSAppleEventsUsageDescription</key>
-  <string>Tab Guard asks Firefox to open its about:processes page, which shows which website runs in each process.</string>
+  <string>Tab Guard asks your browser to open its about:processes page, which shows which website runs in each process.</string>
 </dict>
 </plist>
