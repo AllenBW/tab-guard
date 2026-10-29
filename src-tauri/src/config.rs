@@ -39,9 +39,11 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// The warning level never sits above the close limit. The close limit
+    /// wins, since in Close at limit the warning level isn't used at all.
     fn sanitized(mut self) -> Limits {
-        self.warn_mb = self.warn_mb.max(100);
-        self.kill_mb = self.kill_mb.max(self.warn_mb);
+        self.kill_mb = self.kill_mb.max(100);
+        self.warn_mb = self.warn_mb.clamp(100, self.kill_mb);
         self
     }
 }
@@ -142,8 +144,8 @@ impl Config {
 
     /// Clamp values the UI or a hand-edited file could get wrong.
     pub fn sanitized(mut self) -> Config {
-        self.warn_mb = self.warn_mb.max(100);
-        self.kill_mb = self.kill_mb.max(self.warn_mb);
+        self.kill_mb = self.kill_mb.max(100);
+        self.warn_mb = self.warn_mb.clamp(100, self.kill_mb);
         for l in self.browser_limits.values_mut() {
             *l = l.sanitized();
         }

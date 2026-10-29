@@ -153,6 +153,15 @@ test("row labels say which browser only when several run", () => {
   assert.equal(tabLabel(tab, names, true), "Firefox Developer Edition tab process 7 (1.5 GB)");
 });
 
+test("saving another setting doesn't give the picked browser its own limits", () => {
+  const form = { warn_gb: "1", kill_gb: "2", total_gb: "8", total_min_victim_mb: "400", notify_on_close: true };
+  const c = settingsToConfig(config, form, "/Applications/Firefox Nightly.app");
+  assert.equal(c.notify_on_close, true);
+  assert.deepEqual(c.browser_limits, config.browser_limits, "no copy made");
+  const own = settingsToConfig(config, { ...form, kill_gb: "3" }, "/Applications/Firefox Nightly.app");
+  assert.equal(own.browser_limits["/Applications/Firefox Nightly.app"].kill_mb, 3072);
+});
+
 test("the Limits for picker", () => {
   const t = (key, name, running = true, own = false) => ({ key, name, running, own });
   const release = t("/A/Firefox.app", "Firefox");
