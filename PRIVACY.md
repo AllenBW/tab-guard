@@ -44,3 +44,10 @@ macOS asks once whether Tab Guard may control Firefox (or another Firefox-based 
 permission is only used by the **Which site is which?** button, to ask the browser to open its
 `about:processes` page. Chrome-family browsers are handed the address of their
 `chrome://process-internals` page the ordinary way, which needs no permission.
+
+## Links
+
+The links under **About** open in your browser like any other link. **Take a walk.** goes to the
+author's website with `?ref=tab-guard-app` on the address, so that site can count how many walks
+start from Tab Guard. The tag names the app, nothing about you; the link on the project page says
+`?ref=tab-guard-page` instead.
