@@ -129,13 +129,15 @@ pub struct Guard {
     pub snapshot: Snapshot,
 }
 
-/// When "Pause until tomorrow" ends: 6 in the morning, local time, on the
-/// next day.
-pub fn tomorrow_morning(now_unix: u64) -> u64 {
+/// When "Until 6 in the morning" ends: the next 6:00, local time. Paused
+/// after midnight, that's the same day.
+pub fn next_morning(now_unix: u64) -> u64 {
     let t = now_unix as libc::time_t;
     let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
     unsafe { libc::localtime_r(&t, &mut tm) };
-    tm.tm_mday += 1;
+    if tm.tm_hour >= 6 {
+        tm.tm_mday += 1;
+    }
     tm.tm_hour = 6;
     tm.tm_min = 0;
     tm.tm_sec = 0;
@@ -337,7 +339,9 @@ impl Guard {
             self.push_event("info", format!("The whole-browser limit{} is back on", self.which(b.id)));
         }
         let cfg = self.config.clone();
-        let over = cfg.total_mb > 0 && total_mb > cfg.total_mb;
+        // This browser's own limit, which the rule that picks the tab uses too.
+        let limit = cfg.limits_for(&b.key).total_mb;
+        let over = limit > 0 && total_mb > limit;
 
         // Judge the last close once the cooldown is up, just before the
         // rule would pick another tab. It helped if this browser is under the
@@ -349,7 +353,7 @@ impl Guard {
                 if over && dropped < freed / 2 && cfg.total_backoff_mins > 0 {
                     let until = now + Duration::from_secs(cfg.total_backoff_mins * 60);
                     let why = format!(
-                        "closing a {} tab didn't bring {} down ({} before, {} now)",
+                        "closing a {} tab process didn't lower {}'s total ({} before, {} now)",
                         gb(freed),
                         b.name,
                         gb(before),
@@ -410,7 +414,7 @@ impl Guard {
             let reason = row.reason.clone().unwrap_or_default();
             let (kind, verb) = match (row.status, row.action.as_deref()) {
                 (Status::Over, Some("Would close")) => ("would-close", "Would close"),
-                (Status::Over, _) => ("warn", "Queued to close"),
+                (Status::Over, _) => ("warn", "Next to close"),
                 _ => ("warn", "Flagged"),
             };
             let name = self.tab_name(row.proc.browser, row.proc.pid);
@@ -487,7 +491,7 @@ impl Guard {
     pub fn set_spared(&mut self, pid: u32, spared: bool) {
         if spared {
             if self.spared.insert(pid) {
-                self.push_event("info", format!("Sparing tab process {pid} until it exits"));
+                self.push_event("info", format!("Sparing tab process {pid} until it exits or Tab Guard restarts"));
             }
         } else if self.spared.remove(&pid) {
             self.push_event("info", format!("Stopped sparing tab process {pid}"));
@@ -696,7 +700,7 @@ mod tests {
         // Firefox grows the 900 MB straight back, elsewhere.
         assert!(run(&mut g, &crowd(&[1], 900), t + secs(61)).is_empty());
         let hold = g.snapshot.total_hold.clone().expect("paused");
-        assert!(hold.contains("closing a 0.9 GB tab didn't bring Firefox down"), "{hold}");
+        assert!(hold.contains("closing a 0.9 GB tab process didn't lower Firefox's total"), "{hold}");
         assert!(hold.contains("10.5 GB before, 10.5 GB now"), "{hold}");
         assert_eq!(g.snapshot.over, 0, "nothing is marked to close while paused");
         // Still paused 14 minutes later; back on after 15.
@@ -732,6 +736,33 @@ mod tests {
         assert!(hold.contains("it has closed 3 tabs in the last hour"), "{hold}");
         // An hour after the first close, one more is allowed.
         assert_eq!(run(&mut g, &crowd(&gone, 2048), t + secs(3600)).len(), 1);
+    }
+
+    #[test]
+    fn a_browsers_own_limit_is_capped_and_backs_off() {
+        // The main limit is off; this Firefox has its own 8 GB one.
+        let own = crate::config::Limits { warn_mb: 1024, kill_mb: 2048, total_mb: 8 * 1024, total_min_victim_mb: 400 };
+        let cfg = Config {
+            mode: Mode::Close,
+            total_mb: 0,
+            browser_limits: [("/Applications/Firefox.app".to_string(), own)].into(),
+            ..Config::default()
+        };
+        let mut g = Guard::new(cfg.clone(), None, None);
+        let t = Instant::now();
+        let mut gone = vec![];
+        for i in 0..3u64 {
+            let closed = run(&mut g, &crowd(&gone, 2048), t + secs(61 * i));
+            assert_eq!(closed.len(), 1);
+            gone.extend(closed);
+        }
+        assert!(run(&mut g, &crowd(&gone, 2048), t + secs(61 * 3)).is_empty(), "the hourly cap holds");
+        assert!(g.snapshot.total_hold.is_some());
+
+        let mut g = Guard::new(cfg, None, None);
+        assert_eq!(run(&mut g, &crowd(&[], 0), t), [1]);
+        assert!(run(&mut g, &crowd(&[1], 900), t + secs(61)).is_empty(), "a close that didn't help backs off");
+        assert!(g.snapshot.total_hold.is_some());
     }
 
     #[test]
@@ -845,7 +876,7 @@ mod tests {
         assert_eq!(run_two(&mut g, &two_crowds(&[1], [900, 0]), t + secs(61)), [101]);
         let hold = g.snapshot.total_hold.clone().expect("Firefox paused");
         assert!(hold.starts_with("Whole-browser limit for Firefox paused until"), "{hold}");
-        assert!(hold.contains("didn't bring Firefox down"), "{hold}");
+        assert!(hold.contains("didn't lower Firefox's total"), "{hold}");
         assert!(g.events().any(|e| e.text.starts_with("Closed Firefox Nightly tab process 101 (0.9 GB): Firefox Nightly is at 10.5 GB")));
         // Nightly's close helped, so it keeps going.
         assert_eq!(run_two(&mut g, &two_crowds(&[1, 101], [900, 0]), t + secs(122)), [102]);
@@ -962,15 +993,24 @@ mod tests {
     }
 
     #[test]
-    fn tomorrow_morning_is_six_the_next_day() {
-        let now = 1_793_178_785; // 2026-10-28 09:13 UTC
-        let t = tomorrow_morning(now);
-        assert!(t > now && t - now < 48 * 3600);
-        let local = local_time(t);
-        assert_eq!(&local[11..19], "06:00:00");
-        assert_ne!(&local[..10], &local_time(now)[..10]);
-        assert_eq!(pause_end_text(t, now), "tomorrow 06:00");
-        assert_eq!(pause_end_text(now + 60, now).len(), 5, "later today: just the time");
+    fn next_morning_is_the_next_six_oclock() {
+        // Local times on one day, so the test holds in any time zone.
+        let at = |hour: i32| {
+            let t = 1_793_178_785 as libc::time_t;
+            let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+            unsafe { libc::localtime_r(&t, &mut tm) };
+            (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_isdst) = (hour, 0, 0, -1);
+            unsafe { libc::mktime(&mut tm) as u64 }
+        };
+        let evening = at(21);
+        let t = next_morning(evening);
+        assert_eq!(&local_time(t)[11..19], "06:00:00");
+        assert_ne!(&local_time(t)[..10], &local_time(evening)[..10]);
+        assert_eq!(pause_end_text(t, evening), "tomorrow 06:00");
+        // Paused at 1 in the morning, it ends five hours later, the same day.
+        let night = at(1);
+        assert_eq!(next_morning(night) - night, 5 * 3600);
+        assert_eq!(pause_end_text(next_morning(night), night), "06:00");
     }
 
     #[test]

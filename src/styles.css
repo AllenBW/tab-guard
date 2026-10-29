@@ -215,7 +215,8 @@ tr.over .pill { background: var(--over-soft); color: var(--over); }
 tr.spared .pill { background: var(--spared-soft); color: var(--spared); }
 .reason { font-size: 12px; color: var(--muted); }
 .actions { white-space: nowrap; text-align: right; }
-.actions button { padding: 2px 8px; font-size: 12px; }
+.actions button { padding: 2px 8px; font-size: 12px; min-height: 24px; }
+.actions button[aria-pressed="true"] { color: var(--spared); border-color: var(--spared); }
 .grow-up { color: var(--warn); }
 .empty { text-align: center; color: var(--muted); padding: 28px; }
 
@@ -266,6 +267,7 @@ input[type="number"] {
 .events li { display: flex; gap: 12px; padding: 7px 12px; border-bottom: 1px solid var(--border); }
 .events li:last-child { border-bottom: none; }
 .events time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.events .closed { color: var(--over); }
-.events .would-close { color: var(--warn); }
+.events .closed { color: var(--over); font-weight: 600; }
+.events .would-close { color: var(--over); }
+.events .warn { color: var(--warn); }
 .events li span { -webkit-user-select: text; user-select: text; }

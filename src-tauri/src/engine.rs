@@ -120,10 +120,10 @@ pub fn evaluate(
         if let Some(pid) = victim {
             total_victims.push(pid);
             let row = rows.iter_mut().find(|r| r.proc.pid == pid).unwrap();
-            let which = if cfg.prefer_idle && idle == Some(pid) { "biggest idle tab" } else { "biggest tab" };
+            let which = if cfg.prefer_idle && idle == Some(pid) { "biggest idle tab process" } else { "biggest tab process" };
             row.status = Status::Over;
             row.reason = Some(format!(
-                "{} is at {}, over the {} total limit; this is the {which}",
+                "{} is at {}, over its {} whole-browser limit. This is its {which}",
                 b.name,
                 gb(b_total),
                 gb(lim.total_mb)
@@ -212,7 +212,7 @@ mod tests {
         let e = ev(&cfg(Mode::WarnThenClose), &procs, &HashSet::new(), true, false);
         assert!(e.total_mb > 8192);
         assert_eq!(e.close.as_ref().map(|c| c.0), Some(2));
-        assert!(e.close.unwrap().1.contains("biggest idle tab"));
+        assert!(e.close.unwrap().1.contains("biggest idle tab process"));
     }
 
     #[test]
@@ -262,7 +262,7 @@ mod tests {
         let e = ev(&cfg(Mode::Close), &procs, &HashSet::new(), true, false);
         let (pid, reason) = e.close.unwrap();
         assert_eq!(pid, 1);
-        assert!(reason.ends_with("this is the biggest tab"));
+        assert!(reason.ends_with("This is its biggest tab process"));
     }
 
     #[test]

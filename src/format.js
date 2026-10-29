@@ -33,27 +33,30 @@ export function summaryParts(s) {
   if (s.browsers?.length > 1) {
     parts.push(s.browsers.map((b) => `${shortName(b.name)} ${gb(b.total_mb)}`).join(" · "));
   }
-  if (s.over) parts.push(`${s.over} over a limit`);
-  if (s.flagged) parts.push(`${s.flagged} past the warning level`);
+  const procs = (n) => `${n} tab process${n === 1 ? "" : "es"}`;
+  if (s.over) parts.push(`${procs(s.over)} over a limit`);
+  if (s.flagged) parts.push(`${procs(s.flagged)} past the warning level`);
   if (!parts.length) parts.push("Everything's within your limits");
   if (s.cooldown_secs) parts.push(`next close allowed in ${s.cooldown_secs}s`);
   return parts.join(" · ");
 }
 
-/** When a pause ends, as the menu bar says it: "14:30", or "tomorrow 06:00". */
+/** A clock time the way this Mac shows them: "2:30 PM" or "14:30". */
+export const clock = (date) => date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/** When a pause ends: "2:30 PM", or "tomorrow 6:00 AM". */
 export function pauseEnd(until, now = Date.now() / 1000) {
   const end = new Date(until * 1000);
-  const hhmm = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
-  return end.toDateString() === new Date(now * 1000).toDateString() ? hhmm : `tomorrow ${hhmm}`;
+  return end.toDateString() === new Date(now * 1000).toDateString() ? clock(end) : `tomorrow ${clock(end)}`;
 }
 
 /** What the banner under the mode switch says, or null for no banner. */
 export function bannerText(config, s, now = Date.now() / 1000) {
   if (!config.enabled && config.paused_until) {
-    return `Tab Guard is paused until ${pauseEnd(config.paused_until, now)}, then turns itself back on. It's still measuring, but won't flag or close anything until then.`;
+    return `Tab Guard is paused until ${pauseEnd(config.paused_until, now)}, then turns itself back on. Until then it shows what it would close, but closes nothing.`;
   }
   if (!config.enabled) {
-    return "Tab Guard is paused. It's still measuring, but won't flag or close anything until you turn it back on.";
+    return "Tab Guard is paused. It shows what it would close, but closes nothing until you turn it back on.";
   }
   if (config.mode === "watch" && s.over) {
     const n = s.over;
@@ -137,7 +140,7 @@ export function tabLabel(r, names, several) {
 /** The headline: "Firefox is using…", or "Your browsers are using…". */
 export function headline(s) {
   const who = s.browsers.length === 1 ? `${s.browsers[0].name} is` : "Your browsers are";
-  return `${who} using ${gb(s.total_mb)} across ${s.tab_count} tab processes`;
+  return `${who} using ${gb(s.total_mb)} · ${s.tab_count} tab process${s.tab_count === 1 ? "" : "es"}`;
 }
 
 /** "Which site is which?": where each browser shows the site in each
@@ -154,7 +157,7 @@ export function whichSite(browsers) {
     return { intro: "", buttons: [{ id: b?.id ?? null, label, aria: label }] };
   }
   return {
-    intro: "Which site is which? Open",
+    intro: "Which site is which? See the process list in",
     buttons: browsers.map((b) => ({ id: b.id, label: shortName(b.name), aria: aria(b) })),
   };
 }

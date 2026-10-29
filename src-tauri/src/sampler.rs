@@ -109,7 +109,9 @@ pub fn key_name(key: &str) -> String {
 enum Known {
     NotBrowser,
     /// `start` tells a reused pid apart from the process we classified.
-    Browser { kind: Kind, start: u64, parent: u32, family: Family, app: String, profile: Option<String> },
+    /// `named` is false for a Firefox content process whose name macOS
+    /// hasn't been asked for yet (see `content_names`).
+    Browser { kind: Kind, start: u64, parent: u32, family: Family, app: String, profile: Option<String>, named: bool },
 }
 
 /// What grouping needs to know about one browser process.
@@ -138,6 +140,9 @@ pub struct Sampler {
 }
 
 const HISTORY_WINDOW_SECS: u64 = 300;
+/// How long to wait for a new Firefox content process to name itself
+/// before treating it as a tab without one.
+const NAME_WAIT_SECS: u64 = 30;
 const MB: u64 = 1024 * 1024;
 
 impl Sampler {
@@ -214,6 +219,8 @@ impl Sampler {
             members.push((pid, kind, parent, start));
         }
 
+        self.name_content(&mut procs, &mut members);
+
         let members: Vec<Member> = members
             .iter()
             .filter_map(|&(pid, kind, parent, start)| match self.known.get(&pid)? {
@@ -230,6 +237,69 @@ impl Sampler {
         procs.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb).then(a.pid.cmp(&b.pid)));
         (procs, browsers)
     }
+
+    /// Firefox starts every content process the same way, so its arguments
+    /// can't tell a tab from the extensions process or the one for its own
+    /// about: pages. Each one does name itself to macOS ("FirefoxCP
+    /// WebExtensions"), so new ones are looked up there, once.
+    fn name_content(&mut self, procs: &mut [Proc], members: &mut [(u32, Kind, u32, u64)]) {
+        let unnamed = |k: &Known| matches!(k, Known::Browser { named: false, .. });
+        if !self.known.values().any(unnamed) {
+            return;
+        }
+        let names = content_names();
+        for p in procs.iter_mut() {
+            let Some(Known::Browser { kind, named, .. }) = self.known.get_mut(&p.pid) else { continue };
+            if *named {
+                continue;
+            }
+            match names.get(&p.pid) {
+                Some(name) => {
+                    *kind = gecko_content_kind(name);
+                    *named = true;
+                }
+                // Not named yet. A browser that never names them leaves them tabs.
+                None => *named = p.age_secs > NAME_WAIT_SECS,
+            }
+            p.kind = *kind;
+            if let Some(m) = members.iter_mut().find(|m| m.0 == p.pid) {
+                m.1 = *kind;
+            }
+        }
+    }
+}
+
+/// What a Firefox content process is, from the name it gives macOS: web
+/// pages ("Web Content", "Isolated Web Content") and local files are tabs;
+/// extensions, Firefox's own pages and service workers aren't.
+pub fn gecko_content_kind(name: &str) -> Kind {
+    if name.ends_with("Web Content") || name.ends_with("File Content") { Kind::Tab } else { Kind::Other }
+}
+
+/// pid -> the name each running process gave macOS, from `lsappinfo list`.
+fn content_names() -> HashMap<u32, String> {
+    std::process::Command::new("/usr/bin/lsappinfo")
+        .arg("list")
+        .output()
+        .map(|o| parse_lsappinfo(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
+}
+
+/// Each entry starts `12) "Name" ASN:…` and has a `pid = 123 …` line.
+pub fn parse_lsappinfo(text: &str) -> HashMap<u32, String> {
+    let mut names = HashMap::new();
+    let mut name = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.split_once(") \"").filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit())).map(|(_, r)| r) {
+            name = rest.split_once('"').map(|(n, _)| n.to_string());
+        } else if let Some(pid) = t.strip_prefix("pid = ").and_then(|r| r.split_whitespace().next()?.parse().ok()) {
+            if let Some(n) = name.take() {
+                names.insert(pid, n);
+            }
+        }
+    }
+    names
 }
 
 /// Look at a pid we haven't seen before. `main_exe` caches each app's main
@@ -244,7 +314,8 @@ fn identify(pid: u32, main_exe: &mut HashMap<String, String>) -> Known {
     let kind = classify(family, &path, &args, is_main);
     // Chromium browsers run every profile in one process; Firefox runs one per profile.
     let profile = if kind == Kind::Main && family == Family::Gecko { profile_name(&args) } else { None };
-    Known::Browser { kind, start, parent: parent_pid(pid), family, app: app.to_string(), profile }
+    let named = !(family == Family::Gecko && kind == Kind::Tab);
+    Known::Browser { kind, start, parent: parent_pid(pid), family, app: app.to_string(), profile, named }
 }
 
 /// The outermost app bundle a path is in: "/Applications/Google
@@ -594,6 +665,32 @@ mod tests {
         assert_eq!(g(&pc, &["pc", "-isForBrowser", "rdd"]), Kind::Other);
         assert_eq!(g(&pc, &["pc", "tab"]), Kind::Other);
         assert_eq!(g(&format!("{base}/crashhelper"), &[]), Kind::Other);
+    }
+
+    #[test]
+    fn names_firefox_content_processes() {
+        assert_eq!(gecko_content_kind("FirefoxCP Isolated Web Content"), Kind::Tab);
+        assert_eq!(gecko_content_kind("FirefoxCP Web Content"), Kind::Tab);
+        assert_eq!(gecko_content_kind("LibreWolfCP File Content"), Kind::Tab);
+        assert_eq!(gecko_content_kind("FirefoxCP WebExtensions"), Kind::Other);
+        assert_eq!(gecko_content_kind("FirefoxCP Privileged Content"), Kind::Other);
+        assert_eq!(gecko_content_kind("FirefoxCP Isolated Service Worker"), Kind::Other);
+        let text = r#"
+41) "Firefox" ASN:0x0-0x32032: (in front)
+    bundleID="org.mozilla.firefox"
+    pid = 1267 token=[sess=100015 pid=1267] type="Foreground"
+128) "FirefoxCP WebExtensions" ASN:0x0-0xa83a83:
+    bundleID="org.mozilla.plugincontainer"
+    pid = 64290 token=[sess=100015 pid=64290] type="BackgroundOnly"
+129) "Has no pid" ASN:0x0-0x1:
+130) "FirefoxCP Isolated Web Content" ASN:0x0-0xd40d4:
+    pid = 15574 token=[]
+"#;
+        let names = parse_lsappinfo(text);
+        assert_eq!(names.get(&1267).map(String::as_str), Some("Firefox"));
+        assert_eq!(names.get(&64290).map(String::as_str), Some("FirefoxCP WebExtensions"));
+        assert_eq!(names.get(&15574).map(String::as_str), Some("FirefoxCP Isolated Web Content"));
+        assert_eq!(names.len(), 3);
     }
 
     #[test]
