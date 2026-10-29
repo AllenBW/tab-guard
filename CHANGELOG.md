@@ -21,7 +21,7 @@ First public release.
   per-tab and whole-browser limits.
 - Spare or close any tab process from the window; an activity log shows what happened and why.
 - Signed and notarized, with automatic updates.
-- Optional anonymous usage counts, off unless you turn them on (see PRIVACY.md).
+- No analytics or telemetry. The only network request is the update check (see PRIVACY.md).
 - An About tab with your version, a manual update check, and links.
 - Works with the keyboard and VoiceOver: arrow keys move between tabs and modes, every
   button says which process it acts on, and focus stays put while the table refreshes.

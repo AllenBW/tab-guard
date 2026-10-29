@@ -91,8 +91,6 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Public by design (it ships inside the app). Unset = a build that never sends usage counts.
-          APTABASE_APP_KEY: ${{ vars.APTABASE_APP_KEY }}
         with:
           tagName: ${{ env.TAG }}
           releaseName: 'Tab Guard __VERSION__'

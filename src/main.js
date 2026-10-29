@@ -119,7 +119,6 @@ function render() {
   const welcome = $("#welcome");
   if (!config.welcomed && !welcome.open) welcome.showModal();
   if (config.welcomed && welcome.open) welcome.close();
-  for (const el of document.querySelectorAll(".usage-row")) el.hidden = !view.usage_available;
   $("#version").textContent = `Version ${view.version}`;
   $("#update-status").textContent = view.update_status;
 
@@ -321,15 +320,13 @@ function fillSettings(c) {
   form.interval_secs.value = c.interval_secs;
   form.kill_cooldown_secs.value = c.kill_cooldown_secs;
   form.notify_on_close.checked = c.notify_on_close;
-  form.share_usage.checked = c.share_usage;
   form.auto_update.checked = c.auto_update;
 }
 
 function readSettings() {
   const value = (name) => (form[name].type === "checkbox" ? form[name].checked : form[name].value);
   const names = ["warn_gb", "kill_gb", "total_gb", "total_min_victim_mb", "total_backoff_mins", "total_max_per_hour",
-    "prefer_idle", "idle_cpu_percent", "interval_secs", "kill_cooldown_secs", "notify_on_close", "share_usage",
-    "auto_update"];
+    "prefer_idle", "idle_cpu_percent", "interval_secs", "kill_cooldown_secs", "notify_on_close", "auto_update"];
   return settingsToConfig(view.config, Object.fromEntries(names.map((n) => [n, value(n)])), limitTarget);
 }
 
@@ -406,8 +403,7 @@ for (const a of document.querySelectorAll("[data-link]")) {
   a.addEventListener("click", () => invoke("open_link", { name: a.dataset.link }).catch((e) => toast(String(e), true)));
 }
 
-const welcomed = () =>
-  saveConfig({ ...view.config, welcomed: true, share_usage: view.usage_available && $("#welcome-usage").checked });
+const welcomed = () => saveConfig({ ...view.config, welcomed: true });
 $("#welcome-done").addEventListener("click", welcomed);
 // Escape closes the welcome too; count that as seen.
 $("#welcome").addEventListener("cancel", welcomed);
