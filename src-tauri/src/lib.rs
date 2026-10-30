@@ -71,6 +71,11 @@ fn tray_text(cfg: &Config, snap: &Snapshot) -> (Option<String>, String, String) 
     }
     let summary = format!("Firefox: {} · {} tab processes", gb(snap.total_mb), snap.tab_count);
     let detail = match (snap.over, snap.flagged) {
+        // "Whole-browser limit paused until 08:31", without the why.
+        (0, 0) if cfg.enabled && snap.total_hold.is_some() => {
+            let hold = snap.total_hold.as_deref().unwrap_or_default();
+            hold.split_once(": ").map_or(hold, |(short, _)| short).to_string()
+        }
         (0, 0) => "Everything's within your limits".to_string(),
         (0, n) => format!("{n} past the warning level"),
         (o, _) if !cfg.enabled => format!("{o} would be closed (paused)"),
@@ -419,6 +424,18 @@ mod tests {
         assert_eq!(tray_text(&paused, &snap(1, 2, 0)).2, "2 would be closed (paused)");
         assert_eq!(tray_text(&close, &snap(1, 0, 3)).2, "3 past the warning level");
         assert_eq!(tray_text(&close, &snap(1, 0, 0)).2, "Everything's within your limits");
+    }
+
+    #[test]
+    fn tray_detail_mentions_a_paused_whole_browser_limit() {
+        let close = Config { mode: Mode::Close, ..Config::default() };
+        let held = Snapshot {
+            total_hold: Some("Whole-browser limit paused until 08:31: closing a 0.9 GB tab didn't help".into()),
+            ..snap(9216, 0, 0)
+        };
+        assert_eq!(tray_text(&close, &held).2, "Whole-browser limit paused until 08:31");
+        // A tab over its own limit still comes first.
+        assert_eq!(tray_text(&close, &Snapshot { over: 1, ..held }).2, "1 over a limit, closing");
     }
 
     #[test]

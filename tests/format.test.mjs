@@ -5,6 +5,7 @@ import { gb, mbOrGb, duration, growth, summaryParts, bannerText, settingsToConfi
 
 const config = {
   enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
+  total_backoff_mins: 15, total_max_per_hour: 3,
   interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false,
 };
 
@@ -47,10 +48,21 @@ test("banner", () => {
   assert.equal(bannerText({ ...config, mode: "close" }, { over: 2 }), null);
 });
 
+test("banner for a paused whole-browser limit", () => {
+  const total_hold = "Whole-browser limit paused until 08:31: closing a 0.9 GB tab didn't bring Firefox down";
+  assert.equal(
+    bannerText({ ...config, mode: "close" }, { over: 0, total_hold }),
+    `${total_hold}. Tabs over a per-tab limit are still closed.`,
+  );
+  assert.equal(bannerText(config, { over: 0, total_hold }), null, "watch only never pauses it");
+  assert.match(bannerText({ ...config, mode: "close", enabled: false }, { over: 0, total_hold }), /paused\. It's still/);
+});
+
 test("settings form to config", () => {
   const form = {
     warn_gb: "1.5", kill_gb: "3", total_gb: "0", total_min_victim_mb: "250", prefer_idle: false,
     idle_cpu_percent: "5", interval_secs: "30", kill_cooldown_secs: "90", notify_on_close: true,
+    total_backoff_mins: "30", total_max_per_hour: "0",
   };
   const c = settingsToConfig(config, form);
   assert.equal(c.warn_mb, 1536);
@@ -60,6 +72,8 @@ test("settings form to config", () => {
   assert.equal(c.prefer_idle, false);
   assert.equal(c.interval_secs, 30);
   assert.equal(c.notify_on_close, true);
+  assert.equal(c.total_backoff_mins, 30);
+  assert.equal(c.total_max_per_hour, 0, "0 turns the cap off");
   assert.equal(c.mode, "watch", "keeps fields the form doesn't have");
 });
 

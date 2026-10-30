@@ -38,6 +38,9 @@ export function bannerText(config, s) {
     const n = s.over;
     return `Watch only: ${n} tab process${n > 1 ? "es" : ""} would be closed right now. Switch modes to let Tab Guard act.`;
   }
+  if (config.mode !== "watch" && s.total_hold) {
+    return `${s.total_hold}. Tabs over a per-tab limit are still closed.`;
+  }
   return null;
 }
 
@@ -51,6 +54,8 @@ export function settingsToConfig(current, form) {
     kill_mb: Math.round(num(form.kill_gb, current.kill_mb / 1024) * 1024),
     total_mb: Math.round(num(form.total_gb, current.total_mb / 1024) * 1024),
     total_min_victim_mb: Math.round(num(form.total_min_victim_mb, current.total_min_victim_mb)),
+    total_backoff_mins: Math.round(num(form.total_backoff_mins, current.total_backoff_mins)),
+    total_max_per_hour: Math.round(num(form.total_max_per_hour, current.total_max_per_hour)),
     prefer_idle: Boolean(form.prefer_idle),
     idle_cpu_percent: num(form.idle_cpu_percent, current.idle_cpu_percent),
     interval_secs: Math.round(num(form.interval_secs, current.interval_secs)),

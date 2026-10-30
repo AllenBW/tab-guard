@@ -84,6 +84,12 @@
             <label class="check"><input type="checkbox" name="prefer_idle" /> Prefer idle tabs (ones you're probably not using)</label>
             <label>A tab counts as idle under
               <span class="field"><input type="number" name="idle_cpu_percent" step="0.5" min="0" /> % CPU</span></label>
+            <label>If closing a tab doesn't bring Firefox down, pause this limit for
+              <span class="field"><input type="number" name="total_backoff_mins" step="5" min="0" /> minutes</span>
+              <small>Some of Firefox's memory isn't in any tab, so closing more won't help. 0 never pauses.</small></label>
+            <label>Close at most
+              <span class="field"><input type="number" name="total_max_per_hour" step="1" min="0" /> tabs an hour for this limit</span>
+              <small>0 means no cap. Per-tab limits aren't affected by either setting.</small></label>
           </fieldset>
           <fieldset>
             <legend>Timing</legend>
