@@ -26,7 +26,7 @@ export function shortName(name) {
   return rest === name || rest.startsWith("(") ? name : rest;
 }
 
-/** The headline's second line. With more than one Firefox running, it
+/** The headline's second line. With more than one browser running, it
  *  starts with each one's size. */
 export function summaryParts(s) {
   const parts = [];
@@ -55,7 +55,7 @@ export function bannerText(config, s) {
   return null;
 }
 
-/** The limits for one copy of Firefox (by its key), or the main limits for
+/** The limits for one browser (by its key), or the main limits for
  *  `null` and for copies without their own. */
 export function limitsFor(config, key) {
   const own = key != null ? config.browser_limits?.[key] : null;
@@ -93,12 +93,12 @@ export function settingsToConfig(current, form, target = null) {
   };
 }
 
-// ---------------------------------------------------------------- several Firefoxes
+// ---------------------------------------------------------------- several browsers
 
 const KIND_LABEL = { tab: "Tab", gpu: "Graphics", other: "Helper" };
 
-/** The filter to keep: the chosen Firefox's id, or null (All) once it has
- *  quit or only one Firefox is left. */
+/** The filter to keep: the chosen browser's id, or null (All) once it has
+ *  quit or only one browser is left. */
 export function keptFilter(filter, browsers) {
   return browsers.length > 1 && browsers.some((b) => b.id === filter) ? filter : null;
 }
@@ -106,7 +106,7 @@ export function keptFilter(filter, browsers) {
 /** The rows the process table shows for a filter (a browser id, or null for all). */
 export const filterRows = (rows, filter) => (filter == null ? rows : rows.filter((r) => r.browser === filter));
 
-/** The filter's buttons, as [value, label]: All, then each Firefox. */
+/** The filter's buttons, as [value, label]: All, then each browser. */
 export const filterChoices = (browsers) => [["all", "All"], ...browsers.map((b) => [String(b.id), shortName(b.name)])];
 
 /** The labels after a row's pid: its kind, and which browser when several
@@ -148,7 +148,7 @@ export function whichSite(browsers) {
   };
 }
 
-/** Whether the "Limits for" picker shows, and which copy of Firefox it
+/** Whether the "Limits for" picker shows, and which browser it
  *  edits: it shows once there's a choice to make, or a copy has its own
  *  limits, and keeps the current choice while that copy is listed. With no
  *  picker, the main limits (null) are edited. */

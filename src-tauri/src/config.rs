@@ -29,7 +29,7 @@ impl Mode {
     }
 }
 
-/// The limits that can differ between copies of Firefox.
+/// The limits that can differ between browsers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limits {
     pub warn_mb: u64,
@@ -56,11 +56,11 @@ pub struct Config {
     pub warn_mb: u64,
     /// A tab process past this is closed (or, in Watch mode, marked "would close").
     pub kill_mb: u64,
-    /// If all of Firefox passes this, the biggest eligible tab is closed. 0 = off.
+    /// If all of a browser passes this, the biggest eligible tab is closed. 0 = off.
     pub total_mb: u64,
     /// Never close a tab smaller than this just to get under `total_mb`.
     pub total_min_victim_mb: u64,
-    /// When a close for `total_mb` doesn't bring Firefox's total down, stop
+    /// When a close for `total_mb` doesn't bring the browser's total down, stop
     /// applying `total_mb` for this many minutes. 0 = never pause.
     pub total_backoff_mins: u64,
     /// Close at most this many tabs an hour for `total_mb`. 0 = no cap.
@@ -82,7 +82,7 @@ pub struct Config {
     pub auto_update: bool,
     /// The user has seen the welcome card in the window.
     pub welcomed: bool,
-    /// Limits for particular copies of Firefox, by `Browser::key`. A copy
+    /// Limits for particular browsers, by `Browser::key`. A copy
     /// without its own uses the limits above.
     pub browser_limits: BTreeMap<String, Limits>,
 }
@@ -130,7 +130,7 @@ impl Config {
         std::fs::write(Self::path(config_dir), json)
     }
 
-    /// The limits for one copy of Firefox.
+    /// The limits for one browser.
     pub fn limits_for(&self, key: &str) -> Limits {
         self.browser_limits.get(key).copied().unwrap_or(Limits {
             warn_mb: self.warn_mb,

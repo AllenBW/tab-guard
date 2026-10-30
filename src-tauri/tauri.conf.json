@@ -19,7 +19,7 @@
       "dmg"
     ],
     "category": "Utility",
-    "shortDescription": "Keeps Firefox tabs from eating your Mac's memory",
+    "shortDescription": "Stops runaway browser tabs from eating your Mac's memory",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
