@@ -24,6 +24,16 @@ once a draft is published, so every release gets a quick smoke test first.
    version's release lists the installer and `latest.json` only. Before publishing, check that
    the draft's `latest.json` points at `releases/download/updates/`.
 
+## How many people have it
+
+`scripts/downloads.sh` prints GitHub's download count for each release file. The installer's count is
+downloads, not installs. The better signal is `latest.json`: every running copy fetches it about four
+times a day for its update check, so its count since upload, divided by four a day, is roughly how many
+Macs ran Tab Guard each day. An archive on the Updater files release is downloaded once per copy that
+applied that update. Replacing a file resets its count, so each release starts from zero. The same
+numbers are in GitHub's API at `https://api.github.com/repos/AllenBW/tab-guard/releases/latest`
+under `download_count`; the release page shows them only in some layouts.
+
 ## One-time setup
 
 The workflow needs seven repository secrets (Settings → Secrets and variables → Actions). They come
