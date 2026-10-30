@@ -179,4 +179,90 @@ mod tests {
         let e = evaluate(&c, &procs, &HashSet::new(), true);
         assert!(e.close.is_none());
     }
+    #[test]
+    fn total_limit_off_when_zero() {
+        let procs: Vec<Proc> = (1..20).map(|p| tab(p, 900, 0.0)).collect();
+        let c = Config { total_mb: 0, ..cfg(Mode::Close) };
+        let e = evaluate(&c, &procs, &HashSet::new(), true);
+        assert!(e.close.is_none());
+        assert!(e.rows.iter().all(|r| r.status == Status::Ok));
+    }
+
+    #[test]
+    fn total_limit_never_picks_small_tabs() {
+        let procs: Vec<Proc> = (1..40).map(|p| tab(p, 300, 0.0)).collect();
+        let e = evaluate(&cfg(Mode::Close), &procs, &HashSet::new(), true);
+        assert!(e.total_mb > 8192);
+        assert!(e.close.is_none(), "every tab is under the 400 MB minimum");
+    }
+
+    #[test]
+    fn total_limit_falls_back_to_busy_tab() {
+        let mut procs = vec![tab(1, 1500, 50.0), tab(2, 1200, 40.0)];
+        procs.extend((10..18).map(|p| tab(p, 900, 20.0)));
+        let e = evaluate(&cfg(Mode::Close), &procs, &HashSet::new(), true);
+        let (pid, reason) = e.close.unwrap();
+        assert_eq!(pid, 1);
+        assert!(reason.ends_with("this is the biggest tab"));
+    }
+
+    #[test]
+    fn total_limit_ignores_preference_when_off() {
+        let mut procs = vec![tab(1, 1800, 30.0), tab(2, 1500, 0.5)];
+        procs.extend((10..17).map(|p| tab(p, 900, 1.0)));
+        let c = Config { prefer_idle: false, ..cfg(Mode::Close) };
+        assert_eq!(evaluate(&c, &procs, &HashSet::new(), true).close.map(|c| c.0), Some(1));
+    }
+
+    #[test]
+    fn total_limit_skips_spared_and_non_tabs() {
+        let gpu = Proc { kind: Kind::Gpu, ..tab(1, 4000, 0.0) };
+        let mut procs = vec![gpu, tab(2, 3000, 0.0), tab(3, 1000, 0.0)];
+        procs.extend((10..14).map(|p| tab(p, 500, 0.0)));
+        let c = Config { kill_mb: 8000, ..cfg(Mode::Close) };
+        let e = evaluate(&c, &procs, &HashSet::from([2]), true);
+        assert_eq!(e.close.map(|c| c.0), Some(3));
+    }
+
+    #[test]
+    fn per_tab_limit_wins_over_total_limit() {
+        let mut procs = vec![tab(1, 2500, 50.0), tab(2, 1900, 0.0)];
+        procs.extend((10..18).map(|p| tab(p, 700, 0.0)));
+        let e = evaluate(&cfg(Mode::WarnThenClose), &procs, &HashSet::new(), true);
+        assert_eq!(e.close.as_ref().map(|c| c.0), Some(1));
+        assert_eq!(status(&e, 2), Status::Warn, "no second Over from the total rule");
+    }
+
+    #[test]
+    fn exactly_at_limits_counts_as_over() {
+        let procs = [tab(1, 2048, 0.0), tab(2, 1024, 0.0), tab(3, 1023, 0.0)];
+        let e = evaluate(&cfg(Mode::WarnThenClose), &procs, &HashSet::new(), true);
+        assert_eq!(status(&e, 1), Status::Over);
+        assert_eq!(status(&e, 2), Status::Warn);
+        assert_eq!(status(&e, 3), Status::Ok);
+    }
+
+    #[test]
+    fn non_tab_processes_are_never_flagged() {
+        let main = Proc { kind: Kind::Main, ..tab(1, 5000, 0.0) };
+        let gpu = Proc { kind: Kind::Gpu, ..tab(2, 5000, 0.0) };
+        let c = Config { total_mb: 0, ..cfg(Mode::Close) };
+        let e = evaluate(&c, &[main, gpu], &HashSet::new(), true);
+        assert!(e.rows.iter().all(|r| r.status == Status::Ok));
+        assert!(e.close.is_none());
+    }
+
+    #[test]
+    fn total_counts_every_firefox_process() {
+        let main = Proc { kind: Kind::Main, ..tab(1, 700, 0.0) };
+        let e = evaluate(&cfg(Mode::Watch), &[main, tab(2, 300, 0.0)], &HashSet::new(), true);
+        assert_eq!(e.total_mb, 1000);
+    }
+
+    #[test]
+    fn gb_formats_one_decimal() {
+        assert_eq!(gb(1024), "1.0 GB");
+        assert_eq!(gb(1536), "1.5 GB");
+        assert_eq!(gb(100), "0.1 GB");
+    }
 }

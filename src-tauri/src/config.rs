@@ -100,3 +100,84 @@ impl Config {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tab-guard-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn defaults_never_close_anything() {
+        let c = Config::default();
+        assert!(c.enabled);
+        assert_eq!(c.mode, Mode::Watch);
+        assert!(!c.mode.closes());
+        assert!(c.warn_mb < c.kill_mb);
+    }
+
+    #[test]
+    fn missing_file_gives_defaults() {
+        let d = temp_dir("missing");
+        assert_eq!(Config::load(&d).mode, Mode::Watch);
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let d = temp_dir("roundtrip");
+        let c = Config { mode: Mode::WarnThenClose, warn_mb: 1500, kill_mb: 3000, notify_on_close: true, ..Config::default() };
+        c.save(&d).unwrap();
+        let back = Config::load(&d);
+        assert_eq!(back.mode, Mode::WarnThenClose);
+        assert_eq!((back.warn_mb, back.kill_mb), (1500, 3000));
+        assert!(back.notify_on_close);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn partial_file_fills_in_defaults() {
+        let d = temp_dir("partial");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(Config::path(&d), r#"{"mode":"close","kill_mb":4096}"#).unwrap();
+        let c = Config::load(&d);
+        assert_eq!(c.mode, Mode::Close);
+        assert_eq!(c.kill_mb, 4096);
+        assert_eq!(c.warn_mb, Config::default().warn_mb);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn broken_file_falls_back_to_safe_defaults() {
+        let d = temp_dir("broken");
+        std::fs::create_dir_all(&d).unwrap();
+        for bad in ["not json", r#"{"mode":"destroy-everything"}"#, r#"{"warn_mb":"lots"}"#] {
+            std::fs::write(Config::path(&d), bad).unwrap();
+            assert_eq!(Config::load(&d).mode, Mode::Watch, "for {bad}");
+        }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn sanitize_clamps_bad_values() {
+        let c = Config { warn_mb: 10, kill_mb: 50, interval_secs: 0, idle_cpu_percent: -5.0, ..Config::default() }
+            .sanitized();
+        assert_eq!(c.warn_mb, 100);
+        assert_eq!(c.kill_mb, 100, "kill limit can't be below the warning level");
+        assert_eq!(c.interval_secs, 3);
+        assert_eq!(c.idle_cpu_percent, 0.0);
+        let c = Config { interval_secs: 100_000, idle_cpu_percent: 900.0, ..Config::default() }.sanitized();
+        assert_eq!(c.interval_secs, 600);
+        assert_eq!(c.idle_cpu_percent, 100.0);
+    }
+
+    #[test]
+    fn modes_serialize_as_the_ui_expects() {
+        assert_eq!(serde_json::to_string(&Mode::Watch).unwrap(), r#""watch""#);
+        assert_eq!(serde_json::to_string(&Mode::WarnThenClose).unwrap(), r#""warn-then-close""#);
+        assert_eq!(serde_json::to_string(&Mode::Close).unwrap(), r#""close""#);
+    }
+}
