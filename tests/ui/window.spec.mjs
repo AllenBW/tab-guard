@@ -16,6 +16,15 @@ async function open(page, query = "") {
 const tab = (page, name) => page.getByRole("tab", { name });
 const rows = (page) => page.locator("#rows tr");
 
+test("the welcome sits over the window and Escape dismisses it for good", async ({ page }) => {
+  await page.goto("/");
+  const welcome = page.getByRole("dialog", { name: "Welcome to Tab Guard" });
+  await expect(welcome).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(welcome).toBeHidden();
+  expect((await sent(page, "save_config")).at(-1).config.welcomed).toBe(true);
+});
+
 test("tabs switch by clicking and with the arrow keys", async ({ page }) => {
   await open(page);
   await tab(page, "Limits & settings").click();
