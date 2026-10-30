@@ -12,6 +12,7 @@ use std::collections::{HashSet, VecDeque};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
@@ -59,6 +60,8 @@ struct Inner {
 struct Shared {
     inner: Mutex<Inner>,
     wake: Mutex<Sender<()>>,
+    /// Tracked here so the monitor never has to ask the window (a main-thread call).
+    window_visible: AtomicBool,
 }
 
 impl Shared {
@@ -218,18 +221,22 @@ fn show_window(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    app.state::<Arc<Shared>>().wake();
+    let shared = app.state::<Arc<Shared>>();
+    shared.window_visible.store(true, Ordering::Relaxed);
+    shared.wake();
 }
 
 fn update_config(app: &AppHandle, shared: &Shared, change: impl FnOnce(&mut Config)) {
-    {
+    let (cfg, snap) = {
         let mut inner = shared.inner.lock().unwrap();
         let mut cfg = inner.config.clone();
         change(&mut cfg);
         apply_config(&mut inner, cfg);
-        if let Some(items) = app.try_state::<TrayItems>() {
-            items.refresh(&inner.config, &inner.snapshot);
-        }
+        (inner.config.clone(), inner.snapshot.clone())
+    };
+    // Outside the lock: see the note in `monitor`.
+    if let Some(items) = app.try_state::<TrayItems>() {
+        items.refresh(&cfg, &snap);
     }
     shared.wake();
 }
@@ -261,7 +268,7 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     std::thread::sleep(Duration::from_secs(1));
     loop {
         let procs = sampler.sample();
-        let interval = {
+        let (cfg, snap) = {
             let mut inner = shared.inner.lock().unwrap();
             let cfg = inner.config.clone();
             let cooldown = Duration::from_secs(cfg.kill_cooldown_secs);
@@ -314,13 +321,17 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
                     .unwrap_or(0),
                 checked_at: unix_now(),
             };
-            if let Some(items) = app.try_state::<TrayItems>() {
-                items.refresh(&inner.config, &inner.snapshot);
-            }
-
-            let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
-            Duration::from_secs(if visible { 3 } else { cfg.interval_secs })
+            (inner.config.clone(), inner.snapshot.clone())
         };
+
+        // Tray and window calls block until the main thread runs them, and the
+        // main thread takes `inner` to answer the window's commands. Making
+        // them while holding `inner` deadlocks the app, so they come after.
+        if let Some(items) = app.try_state::<TrayItems>() {
+            items.refresh(&cfg, &snap);
+        }
+        let visible = shared.window_visible.load(Ordering::Relaxed);
+        let interval = Duration::from_secs(if visible { 3 } else { cfg.interval_secs });
         // Sleep until the next check, or until something wakes us early.
         let _ = wake.recv_timeout(interval);
         while wake.try_recv().is_ok() {}
@@ -459,6 +470,7 @@ pub fn run() {
                     snapshot: Snapshot::default(),
                 }),
                 wake: Mutex::new(tx),
+                window_visible: AtomicBool::new(false),
             });
             shared.inner.lock().unwrap().push_event("info", format!("Started in “{}” mode", config.mode.label()));
             app.manage(shared.clone());
@@ -469,10 +481,12 @@ pub fn run() {
             // Closing the window hides it; Tab Guard keeps running in the menu bar.
             if let Some(w) = app.get_webview_window("main") {
                 let w2 = w.clone();
+                let shared2 = shared.clone();
                 w.on_window_event(move |e| {
                     if let WindowEvent::CloseRequested { api, .. } = e {
                         api.prevent_close();
                         let _ = w2.hide();
+                        shared2.window_visible.store(false, Ordering::Relaxed);
                     }
                 });
             }
