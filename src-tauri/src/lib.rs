@@ -472,7 +472,7 @@ const LINKS: [(&str, &str); 6] = [
     ("changelog", "https://github.com/AllenBW/tab-guard/blob/main/CHANGELOG.md"),
     ("privacy", "https://github.com/AllenBW/tab-guard/blob/main/PRIVACY.md"),
     ("issues", "https://github.com/AllenBW/tab-guard/issues"),
-    ("walk", "https://allenmanzanowight.com/walk?ref=tab-guard"),
+    ("walk", "https://allenmanzanowight.com/walk/?ref=tab-guard-app"),
 ];
 
 fn link_url(name: &str) -> Option<&'static str> {
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn only_listed_links_open() {
-        assert_eq!(link_url("walk"), Some("https://allenmanzanowight.com/walk?ref=tab-guard"));
+        assert_eq!(link_url("walk"), Some("https://allenmanzanowight.com/walk/?ref=tab-guard-app"));
         assert_eq!(link_url("https://evil.example"), None);
         assert!(LINKS.iter().all(|(_, url)| url.starts_with("https://")));
     }
