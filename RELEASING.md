@@ -18,8 +18,11 @@ once a draft is published, so every release gets a quick smoke test first.
    chrome://process-internals in Chrome.
 4. Publish the draft. Installed copies pick it up within 6 hours (or on **Check for updates**).
    The disk image is the only file a person needs, and its name carries no version so the page's
-   download link never changes. The other assets (`latest.json`, the `.app.tar.gz` and its `.sig`)
-   are the updater's and keep the names tauri-action gives them.
+   download link never changes. `latest.json` stays on the version's release because the app's
+   update check reads it from the latest release; the archive and its signature are parked on the
+   **Updater files** pre-release (tag `updates`), which the workflow expects to exist, so the
+   version's release lists the installer and `latest.json` only. Before publishing, check that
+   the draft's `latest.json` points at `releases/download/updates/`.
 
 ## One-time setup
 

@@ -61,7 +61,7 @@ jobs:
             echo "body<<NOTES_EOF"
             cat notes.md
             echo
-            echo "**Install:** download **Install-Tab-Guard.dmg** (the first file below), open it, and drag Tab Guard to Applications. The other files are for Tab Guard's automatic updater and the source code; you don't need them."
+            echo "**Install:** download **Install-Tab-Guard.dmg** (the first file below), open it, and drag Tab Guard to Applications. latest.json is for Tab Guard's automatic updater and the source archives are GitHub's; you don't need them."
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -120,6 +120,28 @@ jobs:
           gh release delete-asset "$TAG" "$(basename "$DMG" | tr " " .)" --yes
           cp "$DMG" "$RUNNER_TEMP/Install-Tab-Guard.dmg"
           gh release upload "$TAG" "$RUNNER_TEMP/Install-Tab-Guard.dmg" --clobber
+
+      - name: Park the updater files on the Updater files release
+        # The app's update check reads latest.json from the latest release and downloads the archive
+        # it names from wherever that points. The archive and its signature go on the "updates"
+        # pre-release (never the latest release), so a version's release lists the installer and
+        # latest.json only.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          ARCHIVE=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "*.app.tar.gz" -print -quit)
+          PARKED="Tab-Guard-${VERSION}-universal.app.tar.gz"
+          cp "$ARCHIVE" "$RUNNER_TEMP/$PARKED"
+          cp "$ARCHIVE.sig" "$RUNNER_TEMP/$PARKED.sig"
+          gh release upload updates "$RUNNER_TEMP/$PARKED" "$RUNNER_TEMP/$PARKED.sig" --clobber
+          gh release download "$TAG" --pattern latest.json --dir "$RUNNER_TEMP/manifest" --clobber
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/updates/$PARKED"
+          jq --arg url "$URL" '.platforms |= with_entries(.value.url = $url)' "$RUNNER_TEMP/manifest/latest.json" > "$RUNNER_TEMP/latest.json"
+          gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --clobber
+          for asset in $(gh release view "$TAG" --json assets --jq '.assets[].name | select(endswith(".app.tar.gz") or endswith(".app.tar.gz.sig"))'); do
+            gh release delete-asset "$TAG" "$asset" --yes
+          done
 
       - name: Clean up the keychain
         if: always()
