@@ -223,7 +223,6 @@ for (const t of document.querySelectorAll(".tabs button")) {
   });
 }
 
-$("#check-now").addEventListener("click", () => invoke("check_now").then(() => setTimeout(refresh, 600)));
 $("#about-processes").addEventListener("click", async (e) => {
   e.target.disabled = true;
   try {
