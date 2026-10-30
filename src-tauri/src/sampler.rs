@@ -337,8 +337,8 @@ pub fn parse_lsappinfo(text: &str) -> HashMap<u32, String> {
 /// Look at a pid we haven't seen before. `main_exe` caches each app's main
 /// executable name.
 fn identify(pid: u32, main_exe: &mut HashMap<String, String>) -> Known {
-    let Some(path) = pid_path(pid) else { return Known::NotBrowser };
-    let Some((family, app)) = browser_app(&path) else { return Known::NotBrowser };
+    let Some(path) = browser_path([pid_path(pid), exec_path(pid)]) else { return Known::NotBrowser };
+    let (family, app) = browser_app(&path).expect("chosen for being a browser's");
     let exe = main_exe.entry(app.to_string()).or_insert_with(|| main_executable(app, family));
     let args = proc_args(pid).unwrap_or_default();
     let is_main = is_main_process(family, app, exe, &path, &args);
@@ -348,6 +348,22 @@ fn identify(pid: u32, main_exe: &mut HashMap<String, String>) -> Known {
     let profile = if kind == Kind::Main && family == Family::Gecko { profile_name(&args) } else { None };
     let content = family == Family::Gecko && kind == Kind::Tab;
     Known::Browser { kind, start, parent: parent_pid(pid), family, app: app.to_string(), profile, content, named: !content }
+}
+
+/// The first of a process's paths that's inside a supported browser: where
+/// the kernel says its executable is, then the path it was started by.
+/// They differ for a browser that was updated on disk while it ran. Chrome
+/// hard-links its executable into a "code sign clone" of its bundle under
+/// the temp folder at every launch, so its signature survives an update;
+/// once the update replaces the copy in /Applications, the kernel names
+/// the running browser by that link, in a folder called "Google Chrome.app
+/// .bundle" that isn't an app, while its arguments still say
+/// /Applications/Google Chrome.app. The kernel can't name an executable
+/// that was deleted outright at all. Either way, its helpers are still
+/// named by their paths in the app, so without this the browser process
+/// went unrecognised and each helper stood alone.
+pub fn browser_path(paths: [Option<String>; 2]) -> Option<String> {
+    paths.into_iter().flatten().find(|p| browser_app(p).is_some())
 }
 
 /// The outermost app bundle a path is in: "/Applications/Google
@@ -573,16 +589,15 @@ fn list_pids(buf: &mut Vec<libc::pid_t>) {
     buf.truncate(n.max(0) as usize);
 }
 
-/// The path of a pid's executable. The kernel can't name one whose file
-/// was deleted (an installer that drops a new copy in under a running
-/// browser does that), so then it's the path the process was started by,
-/// which its arguments keep.
+/// Where the kernel says a pid's executable is now.
 fn pid_path(pid: u32) -> Option<String> {
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
-    if n > 0 {
-        return Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned());
-    }
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+/// The path a pid was started by, which its arguments keep.
+fn exec_path(pid: u32) -> Option<String> {
     procargs(pid).and_then(|b| parse_exec_path(&b))
 }
 
@@ -669,6 +684,21 @@ mod tests {
         assert_eq!(family("/usr/bin/firefox"), None);
         // A folder named Firefox isn't enough; the app itself must be.
         assert_eq!(family("/Users/a/Firefox/Other.app/Contents/MacOS/other"), None);
+    }
+
+    #[test]
+    fn a_browser_is_known_by_the_path_it_was_started_by_too() {
+        // Where the kernel named a Chrome that was updated while it ran (seen 2026-10-30).
+        let clone = "/private/var/folders/tf/3b/X/com.google.Chrome.code_sign_clone/code_sign_clone.aQ18im/\
+            Google Chrome.app.bundle/Contents/MacOS/Google Chrome";
+        let started = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(family(clone), None, "the clone's folder isn't an app");
+        assert_eq!(browser_path([Some(clone.into()), Some(started.into())]).as_deref(), Some(started));
+        // The kernel's path wins when it's a browser's; a deleted executable has none.
+        assert_eq!(browser_path([Some(CHROME_RENDERER.into()), Some(started.into())]).as_deref(), Some(CHROME_RENDERER));
+        assert_eq!(browser_path([None, Some(started.into())]).as_deref(), Some(started));
+        assert_eq!(browser_path([Some("/usr/bin/x".into()), Some("/usr/bin/x".into())]), None);
+        assert_eq!(browser_path([None, None]), None);
     }
 
     #[test]
@@ -922,7 +952,7 @@ mod tests {
         assert_eq!(parent_pid(me), unsafe { libc::getppid() } as u32);
         let args = proc_args(me).expect("own args");
         assert!(!args.is_empty());
-        let exec = parse_exec_path(&super::procargs(me).expect("own procargs")).expect("own exec path");
+        let exec = exec_path(me).expect("own exec path");
         assert!(exec.ends_with(path.rsplit('/').next().unwrap()), "{exec} vs {path}");
         let mut buf = Vec::new();
         list_pids(&mut buf);
