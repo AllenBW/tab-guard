@@ -770,7 +770,7 @@ mod tests {
     fn procargs(argc: i32, exec: &str, pad: usize, argv: &[&str], env: &[&str]) -> Vec<u8> {
         let mut b = argc.to_ne_bytes().to_vec();
         b.extend(exec.as_bytes());
-        b.extend(std::iter::repeat(0).take(pad));
+        b.extend(std::iter::repeat_n(0, pad));
         for s in argv.iter().chain(env) {
             b.extend(s.as_bytes());
             b.push(0);
