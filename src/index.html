@@ -63,6 +63,7 @@
       <section id="processes" class="panel" role="tabpanel" aria-labelledby="tab-processes">
         <div class="panel-bar">
           <span id="checked" class="muted"></span>
+          <div id="proc-filter" class="segmented small-seg" role="radiogroup" aria-label="Show processes from" hidden></div>
           <span class="spacer"></span>
           <span id="about-processes" class="about-processes"></span>
         </div>
@@ -91,20 +92,36 @@
 
       <section id="settings" class="panel" data-fit role="tabpanel" aria-labelledby="tab-settings" hidden>
         <form id="settings-form" class="settings">
+          <div id="limit-picker" class="limit-picker" hidden>
+            <span id="limit-picker-label">Limits for</span>
+            <div id="limit-targets" class="segmented small-seg" role="radiogroup" aria-labelledby="limit-picker-label"></div>
+            <small class="muted">Each copy of Firefox has its own per-tab and whole-browser limits. Everything else applies to all of them.</small>
+          </div>
           <fieldset>
-            <legend>Per-tab limits</legend>
+            <legend>Per-tab limits<span class="limit-for"></span></legend>
             <label>Warn when one tab passes
               <span class="field"><input type="number" name="warn_gb" step="0.1" min="0.1" /> GB</span></label>
             <label>Close a tab past
               <span class="field"><input type="number" name="kill_gb" step="0.1" min="0.1" /> GB</span></label>
           </fieldset>
-          <fieldset class="wide">
-            <legend>Whole-browser limit</legend>
-            <label>When all of Firefox passes
+          <fieldset>
+            <legend>Whole-browser limit<span class="limit-for"></span></legend>
+            <label><span id="total-label">When all of Firefox passes</span>
               <span class="field"><input type="number" name="total_gb" step="0.5" min="0" /> GB</span>
               <small>Closes the biggest tab. 0 turns this off.</small></label>
             <label>But never close a tab smaller than
               <span class="field"><input type="number" name="total_min_victim_mb" step="50" min="0" /> MB</span></label>
+          </fieldset>
+          <fieldset>
+            <legend>Timing</legend>
+            <label>Check every
+              <span class="field"><input type="number" name="interval_secs" step="1" min="3" /> seconds</span>
+              <small>Every 3 seconds while this window is open.</small></label>
+            <label>Wait at least
+              <span class="field"><input type="number" name="kill_cooldown_secs" step="5" min="0" /> seconds between closes</span></label>
+          </fieldset>
+          <fieldset class="wide">
+            <legend>How the whole-browser limit picks and paces closes</legend>
             <label class="check"><input type="checkbox" name="prefer_idle" /> Prefer idle tabs (ones you're probably not using)</label>
             <label>A tab counts as idle under
               <span class="field"><input type="number" name="idle_cpu_percent" step="0.5" min="0" /> % CPU</span></label>
@@ -114,14 +131,6 @@
             <label>Close at most
               <span class="field"><input type="number" name="total_max_per_hour" step="1" min="0" /> tabs an hour for this limit</span>
               <small>0 means no cap. Per-tab limits aren't affected by either setting.</small></label>
-          </fieldset>
-          <fieldset>
-            <legend>Timing</legend>
-            <label>Check every
-              <span class="field"><input type="number" name="interval_secs" step="1" min="3" /> seconds</span>
-              <small>Every 3 seconds while this window is open.</small></label>
-            <label>Wait at least
-              <span class="field"><input type="number" name="kill_cooldown_secs" step="5" min="0" /> seconds between closes</span></label>
           </fieldset>
           <fieldset>
             <legend>General</legend>

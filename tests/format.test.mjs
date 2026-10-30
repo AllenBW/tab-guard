@@ -1,7 +1,7 @@
 // node --test tests/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, esc } from "../src/format.js";
+import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc } from "../src/format.js";
 
 const config = {
   enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
@@ -108,4 +108,19 @@ test("several Firefoxes are named and sized in the summary", () => {
   );
   // One Firefox: no breakdown.
   assert.equal(summaryParts({ over: 0, flagged: 0, cooldown_secs: 0, browsers: browsers.slice(0, 1) }), "Everything's within your limits");
+});
+
+test("limits can be set for one copy of Firefox", () => {
+  const dev = "/Applications/Firefox Developer Edition.app";
+  const form = { warn_gb: "0.5", kill_gb: "1", total_gb: "4", total_min_victim_mb: "300", prefer_idle: true,
+    idle_cpu_percent: "2", interval_secs: "15", kill_cooldown_secs: "60", total_backoff_mins: "15", total_max_per_hour: "3" };
+  const c = settingsToConfig({ ...config, browser_limits: {} }, form, dev);
+  assert.deepEqual(c.browser_limits[dev], { warn_mb: 512, kill_mb: 1024, total_mb: 4096, total_min_victim_mb: 300 });
+  assert.equal(c.kill_mb, 2048, "the main limits are untouched");
+  assert.deepEqual(limitsFor(c, dev).total_mb, 4096);
+  assert.equal(limitsFor(c, "/Applications/Firefox.app").total_mb, 8192, "others use the main limits");
+  assert.equal(limitsFor(c, null).kill_mb, 2048);
+  // A blank field keeps that copy's own value, not the main one.
+  const again = settingsToConfig(c, { ...form, total_gb: "" }, dev);
+  assert.equal(again.browser_limits[dev].total_mb, 4096);
 });

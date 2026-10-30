@@ -54,10 +54,23 @@ pub struct Snapshot {
     pub checked_at: u64,
 }
 
+/// A copy of Firefox whose limits can be set in the window.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct LimitTarget {
+    /// `Browser::key`, as in `Config::browser_limits`.
+    pub key: String,
+    pub name: String,
+    pub running: bool,
+    /// Whether it has limits of its own yet.
+    pub own: bool,
+}
+
 #[derive(Serialize)]
 pub struct View {
     pub config: Config,
     pub snapshot: Snapshot,
+    /// Running copies first (oldest first), then ones with saved limits.
+    pub limit_targets: Vec<LimitTarget>,
     pub events: Vec<Event>,
     pub spared: Vec<u32>,
     pub log_path: String,
@@ -197,7 +210,8 @@ impl Guard {
         // New whole-browser settings get a fresh start. The hourly count
         // stays, so the cap still holds.
         let total_changed = (old.total_mb, old.total_backoff_mins, old.total_max_per_hour)
-            != (cfg.total_mb, cfg.total_backoff_mins, cfg.total_max_per_hour);
+            != (cfg.total_mb, cfg.total_backoff_mins, cfg.total_max_per_hour)
+            || old.browser_limits != cfg.browser_limits;
         if total_changed {
             let mut ended = false;
             for lim in self.limits.values_mut() {
@@ -433,9 +447,23 @@ impl Guard {
     }
 
     pub fn view(&self) -> View {
+        let mut limit_targets: Vec<LimitTarget> = Vec::new();
+        let running = self.browsers.iter().map(|b| (b.key.as_str(), true));
+        let saved = self.config.browser_limits.keys().map(|k| (k.as_str(), false));
+        for (key, running) in running.chain(saved) {
+            if !limit_targets.iter().any(|t| t.key == key) {
+                limit_targets.push(LimitTarget {
+                    key: key.to_string(),
+                    name: crate::sampler::key_name(key),
+                    running,
+                    own: self.config.browser_limits.contains_key(key),
+                });
+            }
+        }
         View {
             config: self.config.clone(),
             snapshot: self.snapshot.clone(),
+            limit_targets,
             events: self.events.iter().cloned().collect(),
             spared: self.spared.iter().copied().collect(),
             log_path: self.log_path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -453,7 +481,8 @@ mod tests {
     }
 
     fn browser(id: u32, name: &str) -> Browser {
-        Browser { id, name: name.into(), app: format!("/Applications/{name}.app") }
+        let app = format!("/Applications/{name}.app");
+        Browser { id, name: name.into(), key: app.clone(), app }
     }
 
     /// The one Firefox most tests run with.
@@ -793,6 +822,24 @@ mod tests {
         let text = &g.events().next().unwrap().text;
         assert!(text.starts_with("Would close tab process 1 (2.4 GB): Over the"), "{text}");
         assert_eq!(g.snapshot.browsers.len(), 1);
+    }
+
+    #[test]
+    fn lists_running_and_saved_copies_for_settings() {
+        let mut g = guard(Mode::Watch);
+        let saved = crate::config::Limits { warn_mb: 500, kill_mb: 900, total_mb: 0, total_min_victim_mb: 400 };
+        g.apply_config(Config {
+            browser_limits: [
+                ("/Applications/Firefox Nightly.app".to_string(), saved),
+                ("/Applications/Firefox Beta.app".to_string(), saved),
+            ]
+            .into(),
+            ..g.config.clone()
+        });
+        g.pass(&[], &[browser(0, "Firefox"), browser(1, "Firefox Nightly")], Instant::now(), &mut |_| {});
+        let view = g.view();
+        let t: Vec<(&str, bool, bool)> = view.limit_targets.iter().map(|t| (t.name.as_str(), t.running, t.own)).collect();
+        assert_eq!(t, [("Firefox", true, false), ("Firefox Nightly", true, true), ("Firefox Beta", false, true)]);
     }
 
     #[test]

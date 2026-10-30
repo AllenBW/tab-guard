@@ -1,4 +1,4 @@
-import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, esc } from "./format.js";
+import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc } from "./format.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -15,6 +15,10 @@ let view = null;
 let lastJson = "";
 let settingsDirty = false;
 let confirmPid = null;
+/** Which Firefox's processes to show (a browser id), or null for all. */
+let procFilter = null;
+/** Which Firefox's limits the settings edit (a key), or null for the main ones. */
+let limitTarget = null;
 
 let toastTimer;
 /** A short message under the header. The app's web view doesn't show
@@ -119,10 +123,75 @@ function render() {
 
   $("#checked").textContent = s.checked_at ? `Checked ${timeOf(s.checked_at)}` : "";
   renderAboutProcesses(s.browsers);
+  renderProcFilter(s.browsers);
   renderRows(config, s);
   renderEvents(events);
+  renderLimitTargets(view.limit_targets);
   if (!settingsDirty) fillSettings(config);
   $("#log-path").textContent = view.log_path;
+}
+
+/** A radio group of small buttons; `choices` are [value, label, extra class]. */
+function radios(el, choices, selected, choose) {
+  el.innerHTML = choices
+    .map(
+      ([value, label, cls]) =>
+        `<button type="button" role="radio" class="${cls ?? ""}" data-value="${esc(value)}"
+          aria-checked="${value === selected}" tabindex="${value === selected ? 0 : -1}">${esc(label)}</button>`,
+    )
+    .join("");
+  el.onclick = (e) => {
+    const b = e.target.closest("button");
+    if (b) choose(b.dataset.value);
+  };
+}
+
+let filterKey = null;
+/** All / Firefox / Developer Edition, when more than one Firefox is running. */
+function renderProcFilter(browsers) {
+  const el = $("#proc-filter");
+  if (procFilter != null && !browsers.some((b) => b.id === procFilter)) procFilter = null;
+  el.hidden = browsers.length < 2;
+  const key = JSON.stringify([procFilter, browsers.map((b) => [b.id, b.name])]);
+  if (el.hidden || key === filterKey) return;
+  filterKey = key;
+  const choices = [["all", "All"], ...browsers.map((b) => [String(b.id), shortName(b.name)])];
+  radios(el, choices, procFilter == null ? "all" : String(procFilter), (v) => {
+    procFilter = v === "all" ? null : Number(v);
+    filterKey = null;
+    render();
+    $("#proc-filter [aria-checked=true]").focus();
+  });
+}
+
+let targetsKey = null;
+/** "Limits for": shown once there's a choice to make, or a copy has its own limits. */
+function renderLimitTargets(targets) {
+  const picker = $("#limit-picker");
+  const choosing = targets.length > 1 || targets.some((t) => t.own);
+  if (!choosing) limitTarget = null;
+  else if (!targets.some((t) => t.key === limitTarget)) limitTarget = targets[0].key;
+  picker.hidden = !choosing;
+  const name = targets.find((t) => t.key === limitTarget)?.name;
+  for (const el of document.querySelectorAll(".limit-for")) el.textContent = choosing ? ` · ${shortName(name)}` : "";
+  $("#total-label").textContent = `When all of ${choosing ? name : "Firefox"} passes`;
+  const key = JSON.stringify([limitTarget, targets]);
+  if (!choosing || key === targetsKey) return;
+  targetsKey = key;
+  const choices = targets.map((t) => [t.key, t.running ? shortName(t.name) : `${shortName(t.name)} (not running)`, t.running ? "" : "not-running"]);
+  radios($("#limit-targets"), choices, limitTarget, async (key) => {
+    if (key === limitTarget) return;
+    // Save what was typed for the copy being left before switching.
+    if (settingsDirty) {
+      clearTimeout(saveTimer);
+      await saveConfig(readSettings());
+    }
+    limitTarget = key;
+    targetsKey = null;
+    settingsDirty = false;
+    render();
+    $("#limit-targets [aria-checked=true]").focus();
+  });
 }
 
 let aboutKey = null;
@@ -145,6 +214,7 @@ function renderAboutProcesses(browsers) {
 function renderRows(config, s) {
   const tbody = $("#rows");
   const several = s.browsers.length > 1;
+  const rows = procFilter == null ? s.rows : s.rows.filter((r) => r.browser === procFilter);
   const names = Object.fromEntries(s.browsers.map((b) => [b.id, b.name]));
   // With several Firefoxes, each row also says which one; a main process
   // is just named after its Firefox.
@@ -154,15 +224,15 @@ function renderRows(config, s) {
     if (r.kind === "main") return `<span class="kind">${esc(browser)}</span>`;
     return `<span class="kind">${KIND_LABEL[r.kind]}</span><span class="kind browser">${esc(browser)}</span>`;
   };
-  if (!s.rows.length) {
+  if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty">${s.checked_at ? "No Firefox processes." : "Checking…"}</td></tr>`;
     return;
   }
-  const scale = Math.max(config.kill_mb, ...s.rows.map((r) => r.mem_mb));
+  const scale = Math.max(limitsFor(config, null).kill_mb, ...rows.map((r) => r.mem_mb));
   // The table is redrawn every few seconds; put keyboard focus back where it was.
   const focused = document.activeElement?.closest?.("#rows") ? document.activeElement.dataset : null;
   tbody.replaceChildren(
-    ...s.rows.map((r) => {
+    ...rows.map((r) => {
       const tr = document.createElement("tr");
       tr.className = r.status;
       const pill = { warn: "Warning", over: r.action || "Over limit", spared: "Spared" }[r.status];
@@ -245,10 +315,11 @@ function renderEvents(events) {
 const form = $("#settings-form");
 
 function fillSettings(c) {
-  form.warn_gb.value = +(c.warn_mb / 1024).toFixed(2);
-  form.kill_gb.value = +(c.kill_mb / 1024).toFixed(2);
-  form.total_gb.value = +(c.total_mb / 1024).toFixed(2);
-  form.total_min_victim_mb.value = c.total_min_victim_mb;
+  const l = limitsFor(c, limitTarget);
+  form.warn_gb.value = +(l.warn_mb / 1024).toFixed(2);
+  form.kill_gb.value = +(l.kill_mb / 1024).toFixed(2);
+  form.total_gb.value = +(l.total_mb / 1024).toFixed(2);
+  form.total_min_victim_mb.value = l.total_min_victim_mb;
   form.total_backoff_mins.value = c.total_backoff_mins;
   form.total_max_per_hour.value = c.total_max_per_hour;
   form.prefer_idle.checked = c.prefer_idle;
@@ -265,7 +336,7 @@ function readSettings() {
   const names = ["warn_gb", "kill_gb", "total_gb", "total_min_victim_mb", "total_backoff_mins", "total_max_per_hour",
     "prefer_idle", "idle_cpu_percent", "interval_secs", "kill_cooldown_secs", "notify_on_close", "share_usage",
     "auto_update"];
-  return settingsToConfig(view.config, Object.fromEntries(names.map((n) => [n, value(n)])));
+  return settingsToConfig(view.config, Object.fromEntries(names.map((n) => [n, value(n)])), limitTarget);
 }
 
 async function saveConfig(config) {
@@ -317,7 +388,9 @@ function arrowKeys(container, items, choose) {
     choose(target);
   });
 }
-arrowKeys($(".segmented"), "button", (b) => b.click());
+arrowKeys($(".mode .segmented"), "button", (b) => b.click());
+arrowKeys($("#proc-filter"), "button", (b) => b.click());
+arrowKeys($("#limit-targets"), "button", (b) => b.click());
 arrowKeys($(".tabs"), "button", (t) => showPanel(t.dataset.panel));
 
 /** Switch tabs. Also called by the app when the menu bar's About item is used. */

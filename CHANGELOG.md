@@ -10,8 +10,8 @@ First public release.
 - The whole-browser limit backs off when closing tabs doesn't bring Firefox down, and closes
   at most 3 tabs an hour.
 - Works with several copies of Firefox at once (release, Nightly, Developer Edition, or a second
-  profile): each row says which one it belongs to, and the whole-browser limit applies to each
-  copy on its own.
+  profile): each row says which one it belongs to, the process list can be filtered to one copy,
+  and each copy has its own per-tab and whole-browser limits.
 - Spare or close any tab process from the window; an activity log shows what happened and why.
 - Signed and notarized, with automatic updates.
 - Optional anonymous usage counts, off unless you turn them on (see PRIVACY.md).

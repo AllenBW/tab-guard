@@ -1,7 +1,7 @@
 //! Decides, from one sample, which tabs are flagged and which one to close.
 //! Kept free of I/O so the rules can be tested directly.
 
-use crate::config::{Config, Mode};
+use crate::config::{Config, Limits, Mode};
 use crate::sampler::{Browser, Kind, Proc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -66,21 +66,27 @@ pub fn evaluate(
 ) -> Evaluation {
     let total_mb: u64 = procs.iter().map(|p| p.mem_mb).sum();
     let totals = totals(procs);
+    let mode = cfg.mode;
     let mut rows: Vec<Row> = procs
         .iter()
         .map(|p| Row { proc: p.clone(), status: Status::Ok, reason: None, action: None })
         .collect();
 
+    // Each copy of Firefox has its own limits.
+    let limits: HashMap<u32, Limits> = browsers.iter().map(|b| (b.id, cfg.limits_for(&b.key))).collect();
+    let limits_of = |browser: u32| limits.get(&browser).copied().unwrap_or_else(|| cfg.limits_for(""));
+
     // Per-tab limits.
     for row in rows.iter_mut().filter(|r| r.proc.kind == Kind::Tab) {
         let mb = row.proc.mem_mb;
+        let cfg = limits_of(row.proc.browser);
         if spared.contains(&row.proc.pid) {
             row.status = Status::Spared;
             row.reason = Some("You chose to spare this tab".into());
         } else if mb >= cfg.kill_mb {
             row.status = Status::Over;
             row.reason = Some(format!("Over the {} per-tab limit", gb(cfg.kill_mb)));
-        } else if mb >= cfg.warn_mb && cfg.mode != Mode::Close {
+        } else if mb >= cfg.warn_mb && mode != Mode::Close {
             row.status = Status::Warn;
             row.reason = Some(format!("Past the {} warning level", gb(cfg.warn_mb)));
         }
@@ -92,8 +98,9 @@ pub fn evaluate(
     let mut total_victims = Vec::new();
     for b in browsers {
         let b_total = totals.get(&b.id).copied().unwrap_or(0);
+        let lim = limits_of(b.id);
         let mine = |r: &&Row| r.proc.browser == b.id;
-        if held.contains(&b.id) || cfg.total_mb == 0 || b_total <= cfg.total_mb {
+        if held.contains(&b.id) || lim.total_mb == 0 || b_total <= lim.total_mb {
             continue;
         }
         if rows.iter().filter(mine).any(|r| r.status == Status::Over) {
@@ -103,7 +110,7 @@ pub fn evaluate(
             r.proc.browser == b.id
                 && r.proc.kind == Kind::Tab
                 && r.status != Status::Spared
-                && r.proc.mem_mb >= cfg.total_min_victim_mb
+                && r.proc.mem_mb >= lim.total_min_victim_mb
         };
         let idle = rows.iter().filter(eligible).find(|r| r.proc.cpu < cfg.idle_cpu_percent).map(|r| r.proc.pid);
         let biggest = rows.iter().find(eligible).map(|r| r.proc.pid);
@@ -117,7 +124,7 @@ pub fn evaluate(
                 "{} is at {}, over the {} total limit; this is the {which}",
                 b.name,
                 gb(b_total),
-                gb(cfg.total_mb)
+                gb(lim.total_mb)
             ));
         }
     }
@@ -150,7 +157,8 @@ mod tests {
     }
 
     fn browser(id: u32, name: &str) -> Browser {
-        Browser { id, name: name.into(), app: format!("/Applications/{name}.app") }
+        let app = format!("/Applications/{name}.app");
+        Browser { id, name: name.into(), key: app.clone(), app }
     }
 
     /// One copy of Firefox (id 0), held or not.
@@ -362,6 +370,23 @@ mod tests {
         let e = evaluate(&cfg(Mode::Close), &procs, &browsers, &HashSet::new(), true, &HashSet::from([0]));
         assert!(e.close.as_ref().is_some_and(|c| c.0 >= 200), "Nightly still closes");
         assert!(e.rows.iter().filter(|r| r.proc.browser == 0).all(|r| r.status == Status::Ok));
+    }
+
+    #[test]
+    fn each_firefox_uses_its_own_limits() {
+        let (procs, browsers) = two(3, 3);
+        let tight = Limits { warn_mb: 500, kill_mb: 800, total_mb: 2048, total_min_victim_mb: 400 };
+        let c = Config {
+            browser_limits: [(browsers[1].key.clone(), tight)].into(),
+            ..cfg(Mode::Watch)
+        };
+        let e = evaluate(&c, &procs, &browsers, &HashSet::new(), true, &HashSet::new());
+        // Nightly's 900 MB tabs are over its 800 MB limit; Firefox's aren't over its 2 GB.
+        for r in &e.rows {
+            let want = if r.proc.browser == 1 { Status::Over } else { Status::Ok };
+            assert_eq!(r.status, want, "pid {}", r.proc.pid);
+        }
+        assert!(e.rows.iter().any(|r| r.reason.as_deref() == Some("Over the 0.8 GB per-tab limit")));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! User settings, saved as JSON in the app's config directory.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,23 @@ impl Mode {
             Mode::WarnThenClose => "Warn, then close",
             Mode::Close => "Close at limit",
         }
+    }
+}
+
+/// The limits that can differ between copies of Firefox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Limits {
+    pub warn_mb: u64,
+    pub kill_mb: u64,
+    pub total_mb: u64,
+    pub total_min_victim_mb: u64,
+}
+
+impl Limits {
+    fn sanitized(mut self) -> Limits {
+        self.warn_mb = self.warn_mb.max(100);
+        self.kill_mb = self.kill_mb.max(self.warn_mb);
+        self
     }
 }
 
@@ -64,6 +82,9 @@ pub struct Config {
     pub auto_update: bool,
     /// The user has seen the welcome card in the window.
     pub welcomed: bool,
+    /// Limits for particular copies of Firefox, by `Browser::key`. A copy
+    /// without its own uses the limits above.
+    pub browser_limits: BTreeMap<String, Limits>,
 }
 
 impl Default for Config {
@@ -85,6 +106,7 @@ impl Default for Config {
             share_usage: false,
             auto_update: true,
             welcomed: false,
+            browser_limits: BTreeMap::new(),
         }
     }
 }
@@ -108,10 +130,23 @@ impl Config {
         std::fs::write(Self::path(config_dir), json)
     }
 
+    /// The limits for one copy of Firefox.
+    pub fn limits_for(&self, key: &str) -> Limits {
+        self.browser_limits.get(key).copied().unwrap_or(Limits {
+            warn_mb: self.warn_mb,
+            kill_mb: self.kill_mb,
+            total_mb: self.total_mb,
+            total_min_victim_mb: self.total_min_victim_mb,
+        })
+    }
+
     /// Clamp values the UI or a hand-edited file could get wrong.
     pub fn sanitized(mut self) -> Config {
         self.warn_mb = self.warn_mb.max(100);
         self.kill_mb = self.kill_mb.max(self.warn_mb);
+        for l in self.browser_limits.values_mut() {
+            *l = l.sanitized();
+        }
         self.interval_secs = self.interval_secs.clamp(3, 600);
         self.idle_cpu_percent = self.idle_cpu_percent.clamp(0.0, 100.0);
         self.total_backoff_mins = self.total_backoff_mins.min(24 * 60);
@@ -196,6 +231,22 @@ mod tests {
         assert_eq!(c.interval_secs, 600);
         assert_eq!(c.total_backoff_mins, 24 * 60);
         assert_eq!(c.idle_cpu_percent, 100.0);
+    }
+
+    #[test]
+    fn each_firefox_can_have_its_own_limits() {
+        let dev = "/Applications/Firefox Developer Edition.app";
+        let own = Limits { warn_mb: 50, kill_mb: 10, total_mb: 4096, total_min_victim_mb: 200 };
+        let c = Config { browser_limits: BTreeMap::from([(dev.to_string(), own)]), ..Config::default() }.sanitized();
+        let l = c.limits_for(dev);
+        assert_eq!((l.warn_mb, l.kill_mb, l.total_mb), (100, 100, 4096), "clamped like the main limits");
+        let release = c.limits_for("/Applications/Firefox.app");
+        assert_eq!((release.kill_mb, release.total_mb), (2048, 8192), "others use the main limits");
+
+        let d = temp_dir("per-browser");
+        c.save(&d).unwrap();
+        assert_eq!(Config::load(&d).limits_for(dev), l);
+        std::fs::remove_dir_all(d).unwrap();
     }
 
     #[test]

@@ -46,6 +46,27 @@ pub struct Browser {
     pub name: String,
     /// The app bundle, for asking it to open about:processes.
     pub app: String,
+    /// What its settings are saved under: the app, plus the profile if it
+    /// was started with one. Stays the same from one launch to the next.
+    pub key: String,
+}
+
+/// `Browser::key` for an app and profile.
+pub fn browser_key(app: &str, profile: Option<&str>) -> String {
+    match profile {
+        Some(p) => format!("{app}#{p}"),
+        None => app.to_string(),
+    }
+}
+
+/// The name for a saved `Browser::key`, for copies that aren't running.
+pub fn key_name(key: &str) -> String {
+    let (app, profile) = key.split_once('#').map_or((key, None), |(a, p)| (a, Some(p)));
+    let base = app.rsplit('/').next().unwrap_or(app).trim_end_matches(".app");
+    match profile {
+        Some(p) => format!("{base} ({p})"),
+        None => base.to_string(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -224,12 +245,8 @@ pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
         .iter()
         .chain(orphans.iter())
         .map(|m| {
-            let base = m.app.rsplit('/').next().unwrap_or(m.app).trim_end_matches(".app");
-            let name = match m.profile {
-                Some(p) => format!("{base} ({p})"),
-                None => base.to_string(),
-            };
-            Browser { id: m.pid, name, app: m.app.to_string() }
+            let key = browser_key(m.app, m.profile);
+            Browser { id: m.pid, name: key_name(&key), app: m.app.to_string(), key }
         })
         .collect();
     // Two copies with the same name: number the later ones.
@@ -450,6 +467,10 @@ mod tests {
         assert_eq!(of[&21], 20, "a tab stays with its own Firefox, not the oldest");
         let names: Vec<&str> = browsers.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, ["Firefox", "Firefox (2)", "Firefox (work)", "Firefox (3)"]);
+        // Unnamed copies of the same app share their settings; a profile has its own.
+        assert_eq!(browsers[0].key, browsers[1].key);
+        assert_eq!(browsers[2].key, "/Applications/Firefox.app#work");
+        assert_eq!(key_name(&browsers[2].key), "Firefox (work)");
     }
 
     #[test]
