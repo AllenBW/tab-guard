@@ -6,7 +6,6 @@ mod config;
 mod engine;
 mod guard;
 mod sampler;
-mod usage;
 
 use config::Config;
 use engine::gb;
@@ -365,15 +364,12 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     let mut last_tray: Option<(TrayText, TrayState)> = None;
     loop {
         let (procs, browsers) = sampler.sample();
-        let (cfg, snap, closed, counted) = {
+        let (cfg, snap, closed) = {
             let mut g = shared.guard.lock().unwrap();
             g.resume_if_due(unix_now());
             let closed = g.pass(&procs, &browsers, Instant::now(), &mut close_process);
-            (g.config.clone(), g.snapshot.clone(), closed, g.take_usage())
+            (g.config.clone(), g.snapshot.clone(), closed)
         };
-        if cfg.share_usage {
-            usage::send(counted.into_iter().map(usage::describe).collect());
-        }
         if let (Some(c), true) = (&closed, cfg.notify_on_close) {
             notify(&format!(
                 "Closed a {} tab process using {}. Its tabs show as crashed, with a button to reload them.",
@@ -410,7 +406,6 @@ struct WindowView {
     #[serde(flatten)]
     view: View,
     version: String,
-    usage_available: bool,
     update_status: String,
 }
 
@@ -420,7 +415,6 @@ fn get_view(app: AppHandle, shared: State<'_, Arc<Shared>>) -> WindowView {
     WindowView {
         view,
         version: app.package_info().version.to_string(),
-        usage_available: usage::available(),
         update_status: shared.update_status.lock().unwrap().clone(),
     }
 }
@@ -748,13 +742,10 @@ pub fn run() {
             app.manage(shared.clone());
             app.manage(build_tray(app.handle(), &config)?);
 
-            // The welcome card asks about usage sharing, so show it until
-            // it's been answered, including on installs from before it existed.
+            // Show the welcome until it's been seen, including on installs
+            // from before it existed.
             if first_run || !config.welcomed {
                 show_window(app.handle());
-            }
-            if config.share_usage {
-                usage::send(vec![usage::started(config.mode)]);
             }
             let handle = app.handle().clone();
             let for_updates = shared.clone();

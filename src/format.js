@@ -101,7 +101,6 @@ export function settingsToConfig(current, form, target = null) {
     interval_secs: Math.round(num(form.interval_secs, current.interval_secs)),
     kill_cooldown_secs: Math.round(num(form.kill_cooldown_secs, current.kill_cooldown_secs)),
     notify_on_close: Boolean(form.notify_on_close),
-    share_usage: Boolean(form.share_usage),
     auto_update: Boolean(form.auto_update),
   };
 }

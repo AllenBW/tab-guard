@@ -3,7 +3,7 @@
 //! browser. `pass` runs one check's bookkeeping. Nothing here touches Tauri,
 //! so it can be tested directly.
 
-use crate::config::{Config, Mode};
+use crate::config::Config;
 use crate::engine::{self, gb, Row, Status};
 use crate::sampler::{Browser, Family, Kind, Proc};
 use serde::Serialize;
@@ -77,17 +77,6 @@ pub struct View {
     pub log_path: String,
 }
 
-/// Something counted in the anonymous usage stats. Recorded only while the
-/// user shares them; `lib.rs` sends them.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Usage {
-    /// A tab was closed: "per-tab", "whole-browser" or "by-you".
-    Closed(&'static str),
-    /// The whole-browser limit paused: "no-drop" or "hourly-cap".
-    Paused(&'static str),
-    ModeChanged(Mode),
-}
-
 /// What a pass closed, for the caller to report.
 #[derive(Debug, PartialEq)]
 pub struct Closed {
@@ -124,8 +113,6 @@ pub struct Guard {
     limits: HashMap<u32, TotalLimit>,
     /// The browsers seen in the latest check.
     browsers: Vec<Browser>,
-    /// Usage not yet sent.
-    usage: Vec<Usage>,
     pub snapshot: Snapshot,
 }
 
@@ -184,7 +171,6 @@ impl Guard {
             last_close: None,
             limits: HashMap::new(),
             browsers: Vec::new(),
-            usage: Vec::new(),
             snapshot: Snapshot::default(),
         }
     }
@@ -198,17 +184,6 @@ impl Guard {
         }
         self.events.push_front(Event { at, kind, text });
         self.events.truncate(MAX_EVENTS);
-    }
-
-    fn count(&mut self, u: Usage) {
-        if self.config.share_usage {
-            self.usage.push(u);
-        }
-    }
-
-    /// Usage recorded since the last call.
-    pub fn take_usage(&mut self) -> Vec<Usage> {
-        std::mem::take(&mut self.usage)
     }
 
     #[cfg(test)]
@@ -230,12 +205,6 @@ impl Guard {
         if old.mode != cfg.mode {
             self.push_event("info", format!("Mode changed to “{}”", cfg.mode.label()));
         }
-        if old.share_usage != cfg.share_usage {
-            self.push_event(
-                "info",
-                if cfg.share_usage { "Sharing anonymous usage counts".into() } else { "Stopped sharing usage counts".into() },
-            );
-        }
         // New whole-browser settings get a fresh start. The hourly count
         // stays, so the cap still holds.
         let total_changed = (old.total_mb, old.total_backoff_mins, old.total_max_per_hour)
@@ -256,11 +225,7 @@ impl Guard {
                 self.push_event("info", format!("Couldn't save settings: {e}"));
             }
         }
-        let mode_changed = old.mode != cfg.mode;
         self.config = cfg;
-        if mode_changed {
-            self.count(Usage::ModeChanged(self.config.mode));
-        }
         // Re-log flags under the new rules.
         self.logged.clear();
     }
@@ -308,8 +273,7 @@ impl Guard {
         }
     }
 
-    fn hold_total(&mut self, lim: &mut TotalLimit, b: &Browser, until: Instant, now: Instant, kind: &'static str, why: String) {
-        self.count(Usage::Paused(kind));
+    fn hold_total(&mut self, lim: &mut TotalLimit, b: &Browser, until: Instant, now: Instant, why: String) {
         let at = local_time(unix_now() + until.saturating_duration_since(now).as_secs());
         let text = format!("Whole-browser limit{} paused until {}: {why}", self.which(b.id), &at[11..16]);
         self.push_event("info", text.clone());
@@ -359,7 +323,7 @@ impl Guard {
                         gb(before),
                         gb(total_mb)
                     );
-                    self.hold_total(lim, b, until, now, "no-drop", why);
+                    self.hold_total(lim, b, until, now, why);
                     return;
                 }
             }
@@ -369,7 +333,7 @@ impl Guard {
         if over && cap > 0 && lim.closes.len() >= cap {
             let until = lim.closes[lim.closes.len() - cap] + hour;
             let why = format!("it has closed {cap} tab{} in the last hour", if cap == 1 { "" } else { "s" });
-            self.hold_total(lim, b, until, now, "hourly-cap", why);
+            self.hold_total(lim, b, until, now, why);
         }
     }
 
@@ -432,7 +396,6 @@ impl Guard {
                 lim.closes.push_back(now);
                 lim.unjudged = Some((now, before, mem_mb));
             }
-            self.count(Usage::Closed(if eval.close_by_total { "whole-browser" } else { "per-tab" }));
             let name = self.tab_name(browser, *pid);
             self.push_event("closed", format!("Closed {name} ({}): {reason}", gb(mem_mb)));
             let browser = browsers.iter().find(|b| b.id == browser).map_or("browser".into(), |b| b.name.clone());
@@ -484,7 +447,6 @@ impl Guard {
         close(pid);
         let name = self.tab_name(row.proc.browser, pid);
         self.push_event("closed", format!("You closed {name} ({})", gb(row.proc.mem_mb)));
-        self.count(Usage::Closed("by-you"));
         Ok(())
     }
 
@@ -817,33 +779,6 @@ mod tests {
         }
         assert!(g.snapshot.total_hold.is_none());
         assert_eq!(g.snapshot.over, 1, "still shows what would be closed");
-    }
-
-    #[test]
-    fn usage_is_only_recorded_while_shared() {
-        let mut g = guard(Mode::Close);
-        let t = Instant::now();
-        run(&mut g, &[tab(1, 3000)], t);
-        g.apply_config(Config { mode: Mode::Watch, ..g.config.clone() });
-        assert!(g.take_usage().is_empty());
-
-        g.apply_config(Config { share_usage: true, mode: Mode::Close, ..g.config.clone() });
-        assert_eq!(g.events().next().unwrap().text, "Sharing anonymous usage counts");
-        run(&mut g, &[tab(2, 3000)], t + secs(120));
-        run(&mut g, &crowd(&[], 0), t + secs(240));
-        run(&mut g, &crowd(&[1], 900), t + secs(301));
-        g.close_by_user(2, &mut |_| {}).unwrap();
-        assert_eq!(
-            g.take_usage(),
-            [
-                Usage::ModeChanged(Mode::Close),
-                Usage::Closed("per-tab"),
-                Usage::Closed("whole-browser"),
-                Usage::Paused("no-drop"),
-                Usage::Closed("by-you"),
-            ]
-        );
-        assert!(g.take_usage().is_empty(), "taken once");
     }
 
     /// `crowd` for Firefox (id 0, pids 1-12) beside Nightly (id 1, pids
