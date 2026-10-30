@@ -26,7 +26,9 @@ button that reloads it.
 - **Chrome** and browsers built on Chromium: Google Chrome (including Beta, Dev and Canary),
   Microsoft Edge, Brave, Arc, Vivaldi, Opera and Chromium.
 
-Several can run at once; each gets its own limits. Chrome-family browsers start a spare process
+Several can run at once; each gets its own limits. Only processes that hold web pages count as
+tabs: Firefox's extensions process, its own about: pages and its service workers are never closed,
+and neither are Chrome's extensions. Chrome-family browsers start a spare process
 ahead of your next tab, so their tab-process count can be one or two higher than the tabs you
 have open; those spares are small and never reach a limit. Safari isn't supported: its page processes are
 shared with Mail and other apps, so Tab Guard can't tell which are Safari's tabs. Apps built on
@@ -47,7 +49,7 @@ left alone.
 - **It can't tell which website a process is.** Browsers don't tell other apps that. It acts on
   how much a process uses, never on which site it is; Firefox's about:processes page and Chrome's
   chrome://process-internals page show the site behind each process ID.
-- **Not all of a browser's memory is in its tabs.** Closing tabs can't bring that part down,
+- **Not all of a browser's memory is in its tabs.** Closing tabs can't lower that part,
   which is why the whole-browser limit backs off when closes don't help.
 - **It starts in Watch only.** Nothing is closed until you choose a closing mode, so you can see
   what it would do first.
@@ -63,29 +65,32 @@ its color says what Tab Guard is doing:
 | Green | Guarding: a closing mode is on and everything's within your limits. |
 | Orange | Worth a look: tabs past the warning level, a tab Watch only would close, or the whole-browser limit paused. |
 | Red | Closing a tab that's over a limit. |
-| Struck through | Paused. "Paused 0:42" counts down a timed pause. |
+| Struck through | Paused. "Paused 42m" counts down a timed pause. |
 
-Its menu says what's happening (with a matching colored dot) and has two actions:
+Its menu says what's happening (with a matching colored dot), then:
 
-- **Pause ›** for 1 hour, until tomorrow (6 in the morning), or until you turn it back on. A timed
+- **Pause ›** for 1 hour, until 6 in the morning, or until you turn it back on. A timed
   pause turns itself back on, so you can't forget. While paused, this becomes **Resume Tab Guard**.
 - **Open Tab Guard…** for everything else: modes, limits, the process list, the activity log and About.
+- **Quit Tab Guard.**
 
 | Mode | What happens |
 |---|---|
-| **Watch only** (default) | Nothing is closed. Tabs over a limit are marked "Would close", with the reason. |
-| **Warn, then close** | Tabs past the warning level are flagged; tabs over a hard limit are closed. |
-| **Close at limit** | Tabs over a hard limit are closed. No early warnings. |
+| **Watch only** (default) | Tab Guard closes nothing by itself. Tab processes over a limit are marked "Would close", with the reason. |
+| **Warn, then close** | Tab processes past the warning level are marked in the window and turn the shield orange (no notification). Ones over a limit are closed. |
+| **Close at limit** | Tab processes over a limit are closed. Nothing is marked early. |
 
 Limits (all editable in **Limits & settings**, separately for each browser):
 
 - **Per tab:** warn at 1 GB, close past 2 GB.
 - **Whole browser:** past 8 GB in total, close the biggest tab, preferring an idle one
-  (under 2% CPU), and never one under 400 MB. If a close doesn't bring the total down, this limit
-  pauses for 15 minutes, and it closes at most 3 tabs an hour. Per-tab limits keep working meanwhile.
+  (under 2% CPU), and never one under 400 MB. The total counts all of the browser's processes. If a
+  close doesn't lower the total, this limit pauses for 15 minutes, and it closes at most 3 tabs an
+  hour per browser. Per-tab limits keep working meanwhile.
 - **Pacing:** at most one close per check, at least 60 s apart.
 
-In the window, **Spare** protects a tab process until it exits and **Close** closes one now. With
+In the window, **Spare** protects a tab process until it exits (or Tab Guard restarts) and
+**Close** closes one now. With
 more than one browser running, the process list can be filtered to one of them. **Which site is
 which?** opens Firefox's about:processes page (macOS asks once whether Tab Guard may control
 Firefox) or chrome://process-internals in a Chrome-family browser, where each tab's frames are
@@ -95,14 +100,14 @@ Settings: `~/Library/Application Support/local.tabguard/config.json`
 Activity log: `~/Library/Logs/Tab Guard.log`
 
 On first launch it opens its window with a short welcome, and turns on **Start Tab Guard when I
-log in**. To remove it: quit it from the menu bar, then delete Tab Guard from Applications and
-`~/Library/LaunchAgents/Tab Guard.plist`.
+log in**. To remove it: quit it from the menu bar, then delete Tab Guard from Applications,
+`~/Library/LaunchAgents/Tab Guard.plist`, its settings folder and its log (both above).
 
 ## Privacy and updates
 
-Everything runs on your Mac. Anonymous usage counts are off unless you turn them on;
+Tab Guard runs on your Mac. Anonymous usage counts are off unless you turn them on;
 [PRIVACY.md](PRIVACY.md) lists exactly what's sent. Updates are checked on GitHub every 6 hours
-and installed automatically (you can turn that off in **Limits & settings → Updates**).
+and installed automatically (you can turn that off in **Limits & settings → General**).
 
 ## Build from source
 

@@ -38,19 +38,24 @@
     <dialog id="welcome" class="welcome" aria-labelledby="welcome-title">
       <h2 id="welcome-title">Welcome to Tab Guard</h2>
       <p>
-        Tab Guard watches your browser's tabs from the menu bar (Firefox and Chrome, and browsers built on
-        them). When a tab grows past your limits it can close it, and the browser shows that tab as crashed,
-        with a button to reload it. New installs start in <b>Watch only</b>, so nothing is closed until you
-        pick another mode at the top of the window.
+        Tab Guard watches your browsers' tab processes from the menu bar (Firefox, Chrome, and browsers
+        built on them). When one grows past your limits it can close it. The browser then shows that
+        process's tabs as crashed, with a button to reload them, and anything unsaved in them is lost.
       </p>
       <p>
-        The first time you use <b>Which site is which?</b> with Firefox, macOS asks whether Tab Guard may
-        control it. That's only used to open its about:processes page.
+        New installs start in <b>Watch only</b>: nothing is closed until you pick another mode at the top
+        of the window. The limits are 2 GB per tab process and 8 GB per browser; change them under
+        <b>Limits &amp; settings</b>. To stop it, use <b>Pause</b> in the menu bar or the switch at the top right.
+      </p>
+      <p>
+        Tab Guard starts when you log in and installs its updates itself. You can turn either off in
+        <b>Limits &amp; settings</b>.
       </p>
       <label class="check usage-row"><input type="checkbox" id="welcome-usage" />
         <span>Share anonymous usage counts<br />
-        <small class="muted">Which rule closed a tab, which mode you use, and your app and macOS versions.
-        Never websites, process names or memory figures. Off unless you tick this.</small></span></label>
+        <small class="muted">When a tab process is closed and by which rule, when the whole-browser limit
+        pauses, your mode, and your app and macOS versions. Never websites, process names or memory
+        figures. Off unless you tick this.</small></span></label>
       <button id="welcome-done" class="primary">Got it</button>
     </dialog>
 
@@ -87,8 +92,9 @@
         </table>
         </div>
         <p class="muted small">
-          Memory is each process's own footprint (what Activity Monitor shows). Browsers don't tell
-          other apps which website runs in which process; Firefox's about:processes and Chrome's process-internals pages do.
+          Memory is each process's own footprint (what Activity Monitor shows). One tab process can hold
+          several tabs. Browsers don't tell other apps which website runs in which process; Firefox's
+          about:processes and Chrome's process-internals pages do.
         </p>
       </section>
 
@@ -104,7 +110,8 @@
           <fieldset class="pair">
             <legend>Per-tab limits<span class="limit-for"></span></legend>
             <label>Warn when one tab passes
-              <span class="field"><input type="number" name="warn_gb" step="0.1" min="0.1" /> GB</span></label>
+              <span class="field"><input type="number" name="warn_gb" step="0.1" min="0.1" /> GB</span>
+              <small id="warn-unused" hidden>Not used in Close at limit.</small></label>
             <label>Close a tab past
               <span class="field"><input type="number" name="kill_gb" step="0.1" min="0.1" /> GB</span></label>
           </fieldset>
@@ -112,7 +119,7 @@
             <legend>Whole-browser limit<span class="limit-for"></span></legend>
             <label><span id="total-label">When the whole browser passes</span>
               <span class="field"><input type="number" name="total_gb" step="0.5" min="0" /> GB</span>
-              <small>Closes the biggest tab. 0 turns this off.</small></label>
+              <small>Counts all of the browser's processes. Closes one tab process at a time, the biggest idle one if there is one. 0 turns this off.</small></label>
             <label>But never close a tab smaller than
               <span class="field"><input type="number" name="total_min_victim_mb" step="50" min="0" /> MB</span></label>
           </fieldset>
@@ -124,12 +131,12 @@
             <label class="check"><input type="checkbox" name="prefer_idle" /> Prefer idle tabs (ones you're probably not using)</label>
             <label>A tab counts as idle under
               <span class="field"><input type="number" name="idle_cpu_percent" step="0.5" min="0" /> % CPU</span></label>
-            <label>If closing a tab doesn't bring the browser down, pause this limit for
+            <label>If a close doesn't lower the browser's total, pause the whole-browser limit for
               <span class="field"><input type="number" name="total_backoff_mins" step="5" min="0" /> minutes</span>
               <small>Some of a browser's memory isn't in any tab, so closing more won't help. 0 never pauses.</small></label>
-            <label>Close at most
-              <span class="field"><input type="number" name="total_max_per_hour" step="1" min="0" /> tabs an hour for this limit</span>
-              <small>0 means no cap. Per-tab limits aren't affected by either setting.</small></label>
+            <label>The whole-browser limit closes at most
+              <span class="field"><input type="number" name="total_max_per_hour" step="1" min="0" /> tabs an hour</span>
+              <small>Each browser counts separately. 0 means no cap. Per-tab limits aren't affected by either setting.</small></label>
             <label>Wait at least
               <span class="field"><input type="number" name="kill_cooldown_secs" step="5" min="0" /> seconds between closes</span></label>
           </fieldset>
@@ -141,8 +148,8 @@
             <label class="check"><input type="checkbox" name="notify_on_close" /> Show a notification when a tab is closed</label>
             <label class="check"><input type="checkbox" id="autostart" /> Start Tab Guard when I log in</label>
             <label class="check usage-row"><input type="checkbox" name="share_usage" /> Share anonymous usage counts</label>
-            <small class="usage-row">Which rule closed a tab, which mode you use, and your app and macOS versions.
-              Never websites, process names or memory figures.</small>
+            <small class="usage-row">When a tab process is closed and by which rule, when the whole-browser limit
+              pauses, your mode, and your app and macOS versions. Never websites, process names or memory figures.</small>
             <label class="check"><input type="checkbox" name="auto_update" /> Install updates automatically</label>
             <small>Your version and a manual check are under About.</small>
           </fieldset>
@@ -156,7 +163,7 @@
           <div class="about-body">
             <h2>Tab Guard</h2>
             <p class="muted"><span id="version"></span></p>
-            <p>Keeps runaway browser tabs from eating your Mac's memory. Free and open source under the MIT license.</p>
+            <p>Watches your browsers' tab processes and, if you let it, closes the ones that pass your memory limits. Free and open source under the MIT license.</p>
             <div class="about-update">
               <button type="button" id="check-updates">Check for updates</button>
               <small id="update-status" class="muted"></small>

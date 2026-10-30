@@ -60,7 +60,7 @@ test("the switch pauses Tab Guard until it's turned back on", async ({ page }) =
 
 test("a timed pause from the menu bar says when it ends", async ({ page }) => {
   await open(page, "?paused=hour");
-  await expect(page.locator("#banner")).toContainText(/^Tab Guard is paused until \d\d:\d\d, then turns itself back on/);
+  await expect(page.locator("#banner")).toContainText(/^Tab Guard is paused until \d{1,2}:\d\d(\s?[AP]M)?, then turns itself back on/);
   await page.locator("label.switch").click();
   expect((await sent(page, "save_config")).at(-1).config.enabled).toBe(true);
 });
@@ -69,7 +69,7 @@ test("with one Firefox, nothing about copies shows", async ({ page }) => {
   await open(page);
   await expect(page.locator("#proc-filter")).toBeHidden();
   await expect(page.locator(".kind.browser")).toHaveCount(0);
-  await expect(page.locator("#subline")).toHaveText("1 over a limit · 1 past the warning level");
+  await expect(page.locator("#subline")).toHaveText("1 tab process over a limit · 1 tab process past the warning level");
   await expect(page.getByRole("button", { name: "Which site is which? Open about:processes" })).toBeVisible();
   await tab(page, "Limits & settings").click();
   await expect(page.locator("#limit-picker")).toBeHidden();
@@ -93,7 +93,7 @@ test("the process list can be filtered to one Firefox", async ({ page }) => {
 
 test("Chrome alone: named in the headline, with its process page", async ({ page }) => {
   await open(page, "?browsers=chrome");
-  await expect(page.locator("#headline")).toHaveText("Google Chrome is using 8.7 GB across 24 tab processes");
+  await expect(page.locator("#headline")).toHaveText("Google Chrome is using 8.7 GB · 24 tab processes");
   await expect(page.locator("#proc-filter")).toBeHidden();
   await page.getByRole("button", { name: "Which site is which? Open chrome://process-internals" }).click();
   expect(await sent(page, "open_about_processes")).toEqual([{ browser: 48857 }]);
@@ -102,7 +102,7 @@ test("Chrome alone: named in the headline, with its process page", async ({ page
 
 test("Firefox and Chrome together each get their own way to see sites", async ({ page }) => {
   await open(page, "?browsers=mixed");
-  await expect(page.locator("#headline")).toHaveText("Your browsers are using 8.7 GB across 24 tab processes");
+  await expect(page.locator("#headline")).toHaveText("Your browsers are using 8.7 GB · 24 tab processes");
   await expect(page.locator("#subline")).toContainText("Firefox 7.7 GB · Google Chrome 1.1 GB");
   await page.getByRole("button", { name: "Open chrome://process-internals in Google Chrome" }).click();
   await expect(page.getByRole("button", { name: "Open about:processes in Firefox" })).toBeVisible();

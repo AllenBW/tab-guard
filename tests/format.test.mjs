@@ -40,8 +40,8 @@ test("growth", () => {
 
 test("summary line", () => {
   assert.equal(summaryParts({ over: 0, flagged: 0, cooldown_secs: 0 }), "Everything's within your limits");
-  assert.equal(summaryParts({ over: 1, flagged: 2, cooldown_secs: 0 }), "1 over a limit · 2 past the warning level");
-  assert.equal(summaryParts({ over: 1, flagged: 0, cooldown_secs: 40 }), "1 over a limit · next close allowed in 40s");
+  assert.equal(summaryParts({ over: 1, flagged: 2, cooldown_secs: 0 }), "1 tab process over a limit · 2 tab processes past the warning level");
+  assert.equal(summaryParts({ over: 1, flagged: 0, cooldown_secs: 40 }), "1 tab process over a limit · next close allowed in 40s");
 });
 
 test("banner", () => {
@@ -53,13 +53,13 @@ test("banner", () => {
 });
 
 test("banner for a paused whole-browser limit", () => {
-  const total_hold = "Whole-browser limit paused until 08:31: closing a 0.9 GB tab didn't bring Firefox down";
+  const total_hold = "Whole-browser limit paused until 08:31: closing a 0.9 GB tab process didn't lower Firefox's total";
   assert.equal(
     bannerText({ ...config, mode: "close" }, { over: 0, total_hold }),
     `${total_hold}. Tabs over a per-tab limit are still closed.`,
   );
   assert.equal(bannerText(config, { over: 0, total_hold }), null, "watch only never pauses it");
-  assert.match(bannerText({ ...config, mode: "close", enabled: false }, { over: 0, total_hold }), /paused\. It's still/);
+  assert.match(bannerText({ ...config, mode: "close", enabled: false }, { over: 0, total_hold }), /paused\. It shows what it would close, but closes nothing/);
 });
 
 test("settings form to config", () => {
@@ -108,7 +108,7 @@ test("several Firefoxes are named and sized in the summary", () => {
   ];
   assert.equal(
     summaryParts({ over: 0, flagged: 1, cooldown_secs: 0, browsers }),
-    "Firefox 7.1 GB · Nightly 2.3 GB · 1 past the warning level",
+    "Firefox 7.1 GB · Nightly 2.3 GB · 1 tab process past the warning level",
   );
   // One Firefox: no breakdown.
   assert.equal(summaryParts({ over: 0, flagged: 0, cooldown_secs: 0, browsers: browsers.slice(0, 1) }), "Everything's within your limits");
@@ -176,9 +176,9 @@ test("the Limits for picker", () => {
 
 test("the headline names the browser, or says browsers", () => {
   const s = { total_mb: 9216, tab_count: 21 };
-  assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }] }), "Firefox is using 9.0 GB across 21 tab processes");
-  assert.equal(headline({ ...s, browsers: [{ name: "Google Chrome" }] }), "Google Chrome is using 9.0 GB across 21 tab processes");
-  assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }, { name: "Google Chrome" }] }), "Your browsers are using 9.0 GB across 21 tab processes");
+  assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }] }), "Firefox is using 9.0 GB · 21 tab processes");
+  assert.equal(headline({ ...s, browsers: [{ name: "Google Chrome" }] }), "Google Chrome is using 9.0 GB · 21 tab processes");
+  assert.equal(headline({ ...s, browsers: [{ name: "Firefox" }, { name: "Google Chrome" }] }), "Your browsers are using 9.0 GB · 21 tab processes");
 });
 
 test("which site is which: about:processes for Firefox, process-internals for Chrome", () => {
@@ -188,7 +188,7 @@ test("which site is which: about:processes for Firefox, process-internals for Ch
   assert.equal(whichSite([chrome]).buttons[0].label, "Which site is which? Open chrome://process-internals");
   assert.equal(whichSite([]).buttons[0].id, null);
   const both = whichSite([firefox, chrome]);
-  assert.equal(both.intro, "Which site is which? Open");
+  assert.equal(both.intro, "Which site is which? See the process list in");
   assert.deepEqual(both.buttons.map((b) => [b.label, b.aria]), [
     ["Firefox", "Open about:processes in Firefox"],
     ["Google Chrome", "Open chrome://process-internals in Google Chrome"],
@@ -198,9 +198,11 @@ test("which site is which: about:processes for Firefox, process-internals for Ch
 test("a timed pause says when it ends", () => {
   const now = new Date(2026, 9, 28, 13, 48).getTime() / 1000;
   const at = (d, h, m) => new Date(2026, 9, d, h, m).getTime() / 1000;
-  assert.equal(pauseEnd(at(28, 14, 48), now), "14:48");
-  assert.equal(pauseEnd(at(29, 6, 0), now), "tomorrow 06:00");
+  // Times follow the Mac's own format, 12- or 24-hour.
+  const clockAt = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  assert.equal(pauseEnd(at(28, 14, 48), now), clockAt(new Date(at(28, 14, 48) * 1000)));
+  assert.equal(pauseEnd(at(29, 6, 0), now), `tomorrow ${clockAt(new Date(at(29, 6, 0) * 1000))}`);
   const paused = { ...config, enabled: false, paused_until: at(28, 14, 48) };
-  assert.match(bannerText(paused, { over: 0 }, now), /^Tab Guard is paused until 14:48, then turns itself back on\./);
+  assert.match(bannerText(paused, { over: 0 }, now), new RegExp(`^Tab Guard is paused until ${clockAt(new Date(at(28, 14, 48) * 1000))}, then turns itself back on\\.`));
   assert.match(bannerText({ ...paused, paused_until: null }, { over: 0 }, now), /until you turn it back on/);
 });

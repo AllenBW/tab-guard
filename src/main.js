@@ -8,9 +8,9 @@ const { invoke } = window.__TAURI__.core;
 const $ = (sel) => document.querySelector(sel);
 
 const MODE_HELP = {
-  watch: "Nothing is ever closed. Tabs over a limit are marked “Would close” so you can see what would happen.",
-  "warn-then-close": "Tabs past the warning level are flagged; tabs over a hard limit are closed, one at a time.",
-  close: "Tabs over a hard limit are closed, one at a time. No early warnings.",
+  watch: "Tab Guard closes nothing by itself. Tab processes over a limit are marked “Would close”, so you can see what it would do.",
+  "warn-then-close": "Tab processes past the warning level are marked here and turn the shield orange, with no notification. Ones over a limit are closed, one at a time.",
+  close: "Tab processes over a limit are closed, one at a time. Nothing is marked early.",
 };
 
 let view = null;
@@ -92,7 +92,7 @@ function render() {
     $("#headline").textContent = "Checking your browsers…";
   } else if (!s.browser_running) {
     $("#headline").textContent = "No browser is running";
-    $("#subline").textContent = "Tab Guard will start watching as soon as it opens.";
+    $("#subline").textContent = "Tab Guard starts watching as soon as a browser opens.";
   } else {
     $("#headline").textContent = headline(s);
     $("#subline").textContent = summaryParts(s);
@@ -106,6 +106,9 @@ function render() {
     b.tabIndex = on ? 0 : -1;
   }
   $("#mode-help").textContent = MODE_HELP[config.mode];
+  // Close at limit gives no early warning, so the warning level isn't used.
+  $("#settings-form").warn_gb.disabled = config.mode === "close";
+  $("#warn-unused").hidden = config.mode !== "close";
 
   const banner = $("#banner");
   const text = bannerText(config, s);
@@ -240,9 +243,14 @@ function renderRows(config, s) {
         spare.type = "button";
         spare.dataset.pid = r.pid;
         spare.dataset.action = "spare";
-        spare.textContent = r.status === "spared" ? "Unspare" : "Spare";
-        spare.setAttribute("aria-label", `${spare.textContent} ${what}`);
-        spare.title = "Never close this tab process while it's running";
+        // A toggle: pressed while spared, so its width never changes.
+        const spared = r.status === "spared";
+        spare.textContent = "Spare";
+        spare.setAttribute("aria-pressed", String(spared));
+        spare.setAttribute("aria-label", `Spare ${what}`);
+        spare.title = spared
+          ? "Spared until it exits or Tab Guard restarts. Click to stop sparing it."
+          : "Never close this tab process, until it exits or Tab Guard restarts";
         spare.onclick = () => invoke("set_spared", { pid: r.pid, spared: r.status !== "spared" }).then(refresh);
         const close = document.createElement("button");
         close.type = "button";

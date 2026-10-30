@@ -59,7 +59,7 @@ const mock = `
           ? [{ ...first, total_mb: 7854, tab_count: 22 }, { ...second, total_mb: 1090, tab_count: 2 }]
           : [{ ...first, total_mb: 8944, tab_count: 24 }],
         total_hold: config.mode === "watch" ? null
-          : "Whole-browser limit paused until 08:31: closing a 0.9 GB tab didn't bring Firefox down (8.7 GB before, 9.7 GB now)" } }),
+          : "Whole-browser limit paused until 08:31: closing a 0.9 GB tab process didn't lower Firefox's total (8.7 GB before, 9.7 GB now)" } }),
     save_config: (a) => { config = a.config; },
     get_autostart: () => autostart,
     set_autostart: (a) => (autostart = a.enabled),

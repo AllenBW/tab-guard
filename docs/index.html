@@ -6,6 +6,14 @@
   <title>Tab Guard</title>
   <meta name="description" content="A free Mac menu-bar app that stops runaway browser tabs from eating your memory." />
   <link rel="icon" href="icon.png" />
+  <link rel="apple-touch-icon" href="icon.png" />
+  <link rel="canonical" href="https://allenbw.github.io/tab-guard/" />
+  <meta property="og:title" content="Tab Guard" />
+  <meta property="og:description" content="A free Mac menu-bar app that watches your browsers' tab processes and, if you let it, closes the ones that pass your memory limits." />
+  <meta property="og:url" content="https://allenbw.github.io/tab-guard/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://allenbw.github.io/tab-guard/icon.png" />
+  <meta name="twitter:card" content="summary" />
   <style>
     :root {
       --bg: #f6f7f8; --surface: #fff; --text: #1c2024; --muted: #5f676d; --border: #e1e4e8;
@@ -29,13 +37,14 @@
       padding: 12px 22px; border-radius: 10px; }
     .muted { color: var(--muted); font-size: 15px; }
     h2 { font-size: 22px; margin: 44px 0 10px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
     .card h3 { margin: 0 0 6px; font-size: 17px; }
     .card p { margin: 0; color: var(--muted); font-size: 15px; }
     a { color: var(--accent); }
     code { font: 15px ui-monospace, Menlo, monospace; }
-    footer { margin-top: 56px; color: var(--muted); font-size: 14px; }
+    footer { max-width: 760px; margin: 0 auto; padding: 0 16px 56px; color: var(--muted); font-size: 14px; }
+    main { padding-bottom: 40px; }
   </style>
 </head>
 <body>
@@ -52,39 +61,43 @@
       <a class="button" href="https://github.com/AllenBW/tab-guard/releases/latest">Download for Mac</a>
       <span class="muted">macOS 13 or later · Apple silicon and Intel · signed and notarized</span>
     </div>
+    <p class="muted">It starts in Watch only and closes nothing until you choose. A closed tab loses anything unsaved in it.</p>
 
     <p>
       A badly behaved website shouldn't be able to run amok with your computer. One runaway tab can grow to
       gigabytes and send your Mac into swap, and finding and closing it by hand is tedious. macOS has no way
       to cap an app's memory, so Tab Guard watches instead: it sits in the menu bar, checks your browser's
       tab processes, and, if you let it, closes the one that grew past your limit. The browser shows that
-      tab as crashed, with a button that brings it back.
+      tab as crashed, with a button that reloads the page. Anything unsaved in it is lost.
     </p>
     <p class="muted">
       Works with Firefox and browsers built on it (Zen, LibreWolf, Waterfox, Floorp and more) and with
-      Chrome and its relatives (Edge, Brave, Arc, Vivaldi, Opera).
+      Chrome and its relatives (Edge, Brave, Arc, Vivaldi, Opera). Not Safari: its page processes are
+      shared with Mail and other apps, so there's no telling which are its tabs.
     </p>
 
     <h2>How it works</h2>
     <div class="grid">
       <div class="card"><h3>Watch first</h3><p>It starts in Watch only: it shows what it would close and why, and closes nothing until you pick a mode.</p></div>
-      <div class="card"><h3>Your limits</h3><p>A per-tab limit (2 GB by default) and a whole-browser limit (8 GB) that prefers idle tabs and never picks small ones. Running more than one browser? Each gets its own limits.</p></div>
-      <div class="card"><h3>Knows when to stop</h3><p>If closing a tab doesn't bring the browser down, it backs off, and it never closes more than a few tabs an hour.</p></div>
-      <div class="card"><h3>Stays out of the way</h3><p>About 16 MB of memory and no noticeable CPU. Turn it off or change modes from the menu bar.</p></div>
+      <div class="card"><h3>Your limits</h3><p>A per-tab limit (2 GB by default) and a whole-browser limit (8 GB) that closes the biggest tab, preferring an idle one, and never one under 400 MB. Each browser you run gets its own limits.</p></div>
+      <div class="card"><h3>Knows when to stop</h3><p>One close at a time, at least a minute apart. The whole-browser limit closes at most 3 tabs an hour, and pauses for 15 minutes if a close doesn't lower the browser's total.</p></div>
+      <div class="card"><h3>Stays out of the way</h3><p>About 19 MB of memory with its window closed, measured on an Apple silicon Mac. Pause it from the menu bar for an hour, until morning, or until you turn it back on.</p></div>
     </div>
 
     <h2>Before you turn on closing</h2>
     <p>
       Closing a tab is abrupt: it just shows as crashed, and anything unsaved in it is gone. Keep Tab Guard in
       Watch only, or pause it from the menu bar for an hour (it turns itself back on), while you're on a call, presenting, or doing work you can't
-      lose. It judges by memory alone, and can't tell which website a process is. The
+      lose. One process can hold several tabs from the same site, so closing it crashes all of them. It
+      judges by memory alone, and can't tell which website a process is. The
       <a href="https://github.com/AllenBW/tab-guard#limitations-read-before-turning-on-closing">README</a>
-      lists every limitation.
+      lists the rest.
     </p>
 
     <h2>Privacy</h2>
     <p>
-      Everything happens on your Mac. Tab Guard never sees which website runs in which tab. It can share
+      Tab Guard runs on your Mac and never sees which website runs in which tab. It checks GitHub for a
+      new version every 6 hours and installs it; you can turn that off in Limits &amp; settings. It can share
       anonymous usage counts, such as which rule closed a tab, but only if you tick the box; it's off
       otherwise. The <a href="https://github.com/AllenBW/tab-guard/blob/main/PRIVACY.md">privacy notes</a>
       list everything that's sent.
@@ -93,12 +106,12 @@
     <h2>Install</h2>
     <p>
       Download the <code>.dmg</code>, open it, and drag Tab Guard to Applications. It updates itself after
-      that. Prefer the source? <a href="https://github.com/AllenBW/tab-guard">It's on GitHub</a> under the
-      MIT license.
+      that. The source is <a href="https://github.com/AllenBW/tab-guard">on GitHub</a> under the MIT
+      license.
     </p>
-
-    <footer>Made by Allen Manzano-Wight · <a href="https://github.com/AllenBW/tab-guard/issues">Report a problem</a>
-      · Need a break from your tabs? <a href="https://allenmanzanowight.com/walk/?ref=tab-guard-page">Take a walk.</a></footer>
   </main>
+
+  <footer>Made by Allen Manzano-Wight · <a href="https://github.com/AllenBW/tab-guard/issues">Report a problem</a>
+      · Need a break from your tabs? <a href="https://allenmanzanowight.com/walk/?ref=tab-guard-page">Take a walk.</a></footer>
 </body>
 </html>

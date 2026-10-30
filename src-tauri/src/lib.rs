@@ -10,7 +10,7 @@ mod usage;
 
 use config::Config;
 use engine::gb;
-use guard::{local_time, pause_end_text, tomorrow_morning, unix_now, Guard, Snapshot, View};
+use guard::{local_time, next_morning, pause_end_text, unix_now, Guard, Snapshot, View};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -161,11 +161,20 @@ struct TrayItems {
 /// Where Pause › or Resume Tab Guard sits: after the two status lines and a separator.
 const PAUSE_POSITION: usize = 3;
 
-/// "Paused 0:42" in the menu bar while a timed pause runs: hours and
-/// minutes left, rounded up.
+/// "Paused 42m" or "Paused 1h 5m" in the menu bar while a timed pause
+/// runs: the time left, rounded up to the minute.
 fn pause_countdown(until: u64, now_unix: u64) -> String {
     let mins = until.saturating_sub(now_unix).div_ceil(60);
-    format!("Paused {}:{:02}", mins / 60, mins % 60)
+    match (mins / 60, mins % 60) {
+        (0, m) => format!("Paused {m}m"),
+        (h, 0) => format!("Paused {h}h"),
+        (h, m) => format!("Paused {h}h {m}m"),
+    }
+}
+
+/// "1 tab process", "3 tab processes".
+fn tab_processes(n: usize) -> String {
+    format!("{n} tab process{}", if n == 1 { "" } else { "es" })
 }
 
 /// The menu-bar title, the menu's status line, and the line of sizes.
@@ -190,9 +199,9 @@ fn tray_text(cfg: &Config, snap: &Snapshot, now_unix: u64) -> TrayText {
             hold.split_once(": ").map_or(hold, |(short, _)| short).to_string()
         }
         (0, 0) => "Everything's within your limits".to_string(),
-        (0, n) => format!("{n} past the warning level"),
-        (o, _) if !cfg.mode.closes() => format!("{o} would be closed (watch only)"),
-        (o, _) => format!("{o} over a limit, closing"),
+        (0, n) => format!("{} past the warning level", tab_processes(n)),
+        (o, _) if !cfg.mode.closes() => format!("Watch only: {} would be closed", tab_processes(o)),
+        (o, _) => format!("{} over a limit, closing one at a time", tab_processes(o)),
     };
     let mark = if snap.over > 0 { "⚠︎ " } else { "" };
     let title = format!("{mark}{:.1}G", snap.total_mb as f64 / 1024.0);
@@ -248,7 +257,7 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
         true,
         &[
             &MenuItem::with_id(app, "pause:hour", "For 1 hour", true, None::<&str>)?,
-            &MenuItem::with_id(app, "pause:tomorrow", "Until tomorrow", true, None::<&str>)?,
+            &MenuItem::with_id(app, "pause:tomorrow", "Until 6 in the morning", true, None::<&str>)?,
             &MenuItem::with_id(app, "pause:off", "Until I turn it back on", true, None::<&str>)?,
         ],
     )?;
@@ -278,7 +287,7 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
                 "open" => show_window(app),
                 "quit" => app.exit(0),
                 "pause:hour" => update_config(app, &shared, pause_until(Some(unix_now() + 3600))),
-                "pause:tomorrow" => update_config(app, &shared, pause_until(Some(tomorrow_morning(unix_now())))),
+                "pause:tomorrow" => update_config(app, &shared, pause_until(Some(next_morning(unix_now())))),
                 "pause:off" => update_config(app, &shared, pause_until(None)),
                 "resume" => update_config(app, &shared, |c| c.enabled = true),
                 _ => {}
@@ -367,7 +376,7 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
         }
         if let (Some(c), true) = (&closed, cfg.notify_on_close) {
             notify(&format!(
-                "Closed a {} tab using {}. Reload it from the crashed tab when you need it.",
+                "Closed a {} tab process using {}. Its tabs show as crashed, with a button to reload them.",
                 c.browser,
                 gb(c.mem_mb)
             ));
@@ -534,15 +543,6 @@ fn task_manager_hint(name: &str) -> String {
 /// about: scheme).
 fn open_gecko_processes_page(app: &str, name: &str) -> String {
     let tell = format!("tell application \"{}\"", app.replace(['\\', '"'], ""));
-    let mut pbcopy = std::process::Command::new("pbcopy");
-    pbcopy.stdin(std::process::Stdio::piped());
-    if let Ok(mut child) = pbcopy.spawn() {
-        use std::io::Write as _;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(b"about:processes");
-        }
-        let _ = child.wait();
-    }
     let asked = run_with_timeout(
         std::process::Command::new("osascript").args([
             "-e",
@@ -561,10 +561,23 @@ fn open_gecko_processes_page(app: &str, name: &str) -> String {
         Duration::from_secs(7),
     );
     if asked {
-        format!("Asked {name} to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.")
+        format!("Asked {name} to open about:processes. If no tab appeared, type about:processes in its address bar.")
     } else {
+        // Only now is the clipboard worth taking over.
+        let mut pbcopy = std::process::Command::new("pbcopy");
+        pbcopy.stdin(std::process::Stdio::piped());
+        if let Ok(mut child) = pbcopy.spawn() {
+            use std::io::Write as _;
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(b"about:processes");
+            }
+            let _ = child.wait();
+        }
         let _ = run_with_timeout(std::process::Command::new("open").args(["-a", app]), Duration::from_secs(5));
-        format!("{name} didn't accept the request. The address is on your clipboard: in {name} press ⌘L, then ⌘V and Return.")
+        format!(
+            "{name} didn't accept the request. If you declined to let Tab Guard control it, allow it in System Settings › \
+             Privacy & Security › Automation. Or, in {name}, press ⌘L, then ⌘V and Return: the address is on your clipboard."
+        )
     }
 }
 
@@ -596,8 +609,8 @@ fn found_update<T>(checked: Result<Option<T>, tauri_plugin_updater::Error>) -> R
 fn update_error(e: &tauri_plugin_updater::Error) -> String {
     use tauri_plugin_updater::Error::*;
     match e {
-        Reqwest(_) | Network(_) => "no connection to GitHub. Tab Guard will try again later.".into(),
-        e => e.to_string(),
+        Reqwest(_) | Network(_) => "Couldn't reach GitHub to check for updates.".into(),
+        e => format!("The update check failed ({e})."),
     }
 }
 
@@ -619,7 +632,11 @@ async fn check_for_updates_now(app: &AppHandle, shared: &Arc<Shared>, by_user: b
         }
         Ok(Some(version)) => {
             shared.guard.lock().unwrap().push_event("info", format!("Updated from {current} to {version}"));
-            let text = format!("Installed Tab Guard {version}. Restarting…");
+            let text = if by_user {
+                format!("Installed Tab Guard {version}. Restarting…")
+            } else {
+                format!("Installed Tab Guard {version}. It restarts into it when you close this window.")
+            };
             set_update_status(shared, text.clone());
             let (app, shared) = (app.clone(), shared.clone());
             std::thread::spawn(move || {
@@ -632,7 +649,8 @@ async fn check_for_updates_now(app: &AppHandle, shared: &Arc<Shared>, by_user: b
             Ok(text)
         }
         Err(e) => {
-            let text = format!("Couldn't check for updates: {e}");
+            let again = shared.guard.lock().unwrap().config.auto_update;
+            let text = if again { format!("{e} Tab Guard tries again in 6 hours.") } else { e };
             set_update_status(shared, text.clone());
             Err(text)
         }
@@ -779,7 +797,7 @@ mod tests {
         let paused = Config { enabled: false, ..Config::default() };
         assert_eq!(tray_text(&paused, &snap(9216, 1, 0), NOW).0.as_deref(), Some("Paused"));
         let for_a_while = Config { paused_until: Some(NOW + 42 * 60), ..paused.clone() };
-        assert_eq!(tray_text(&for_a_while, &snap(9216, 1, 0), NOW).0.as_deref(), Some("Paused 0:42"));
+        assert_eq!(tray_text(&for_a_while, &snap(9216, 1, 0), NOW).0.as_deref(), Some("Paused 42m"));
     }
 
     #[test]
@@ -820,30 +838,33 @@ mod tests {
     #[test]
     fn tray_detail_says_whether_it_will_close() {
         let watch = Config::default();
-        assert_eq!(tray_text(&watch, &snap(1, 2, 0), NOW).1, "2 would be closed (watch only)");
+        assert_eq!(tray_text(&watch, &snap(1, 2, 0), NOW).1, "Watch only: 2 tab processes would be closed");
         let close = Config { mode: Mode::Close, ..Config::default() };
-        assert_eq!(tray_text(&close, &snap(1, 2, 0), NOW).1, "2 over a limit, closing");
+        assert_eq!(tray_text(&close, &snap(1, 2, 0), NOW).1, "2 tab processes over a limit, closing one at a time");
         let paused = Config { enabled: false, ..close.clone() };
         assert_eq!(tray_text(&paused, &snap(1, 2, 0), NOW).1, "Paused until you turn it back on");
         assert_eq!(tray_text(&paused, &snap(1, 2, 0), NOW).2, "Browsers: 0.0 GB · 20 tab processes", "sizes still show");
-        assert_eq!(tray_text(&close, &snap(1, 0, 3), NOW).1, "3 past the warning level");
+        assert_eq!(tray_text(&close, &snap(1, 0, 3), NOW).1, "3 tab processes past the warning level");
         assert_eq!(tray_text(&close, &snap(1, 0, 0), NOW).1, "Everything's within your limits");
     }
 
     #[test]
     fn a_timed_pause_says_when_it_ends() {
-        let paused = Config { enabled: false, paused_until: Some(tomorrow_morning(NOW)), ..Config::default() };
+        // A day ahead, whatever the time zone.
+        let until = NOW + 24 * 3600;
+        let paused = Config { enabled: false, paused_until: Some(until), ..Config::default() };
         let (title, status, _) = tray_text(&paused, &Snapshot::default(), NOW);
-        assert_eq!(status, "Paused until tomorrow 06:00");
+        assert_eq!(status, format!("Paused until tomorrow {}", &local_time(until)[11..16]));
         assert!(title.unwrap().starts_with("Paused "));
     }
 
     #[test]
     fn the_countdown_rounds_up_to_the_minute() {
-        assert_eq!(pause_countdown(NOW + 3600, NOW), "Paused 1:00");
-        assert_eq!(pause_countdown(NOW + 61, NOW), "Paused 0:02");
-        assert_eq!(pause_countdown(NOW + 20 * 3600, NOW), "Paused 20:00");
-        assert_eq!(pause_countdown(NOW, NOW + 5), "Paused 0:00", "a pause just ended reads as none left");
+        assert_eq!(pause_countdown(NOW + 3600, NOW), "Paused 1h");
+        assert_eq!(pause_countdown(NOW + 61, NOW), "Paused 2m");
+        assert_eq!(pause_countdown(NOW + 3900, NOW), "Paused 1h 5m");
+        assert_eq!(pause_countdown(NOW + 20 * 3600, NOW), "Paused 20h");
+        assert_eq!(pause_countdown(NOW, NOW + 5), "Paused 0m", "a pause just ended reads as none left");
     }
 
     #[test]
@@ -865,7 +886,7 @@ mod tests {
         };
         assert_eq!(tray_text(&close, &held, NOW).1, "Whole-browser limit paused until 08:31");
         // A tab over its own limit still comes first.
-        assert_eq!(tray_text(&close, &Snapshot { over: 1, ..held }, NOW).1, "1 over a limit, closing");
+        assert_eq!(tray_text(&close, &Snapshot { over: 1, ..held }, NOW).1, "1 tab process over a limit, closing one at a time");
     }
 
     #[test]
@@ -890,7 +911,7 @@ mod tests {
         assert_eq!(found_update::<u8>(Err(Error::ReleaseNotFound)), Ok(None));
         assert_eq!(
             found_update::<u8>(Err(Error::Network("timed out".into()))),
-            Err("no connection to GitHub. Tab Guard will try again later.".into())
+            Err("Couldn't reach GitHub to check for updates.".into())
         );
         // Anything else (a bad signature, say) is reported as it is.
         assert!(found_update::<u8>(Err(Error::UnsupportedOs)).unwrap_err().len() > 5);
@@ -899,7 +920,7 @@ mod tests {
     #[test]
     fn network_trouble_reads_plainly() {
         let e = tauri_plugin_updater::Error::Network("timed out".into());
-        assert_eq!(update_error(&e), "no connection to GitHub. Tab Guard will try again later.");
+        assert_eq!(update_error(&e), "Couldn't reach GitHub to check for updates.");
     }
 
     #[test]

@@ -1,8 +1,9 @@
 # Privacy
 
-Tab Guard runs entirely on your Mac. It reads the memory and CPU use of your browsers' processes
+Tab Guard runs on your Mac. It reads the memory and CPU use of your browsers' processes
 from macOS, and keeps its settings and activity log in your home folder. It doesn't read your
-browsing: it never sees which website runs in which process.
+browsing: it never sees which website runs in which process. It does go online to check for
+updates (below), and to send usage counts if you turn them on.
 
 ## Anonymous usage counts (off unless you turn them on)
 
@@ -11,17 +12,18 @@ change your answer any time under **Limits & settings → General**. While it's 
 sent.
 
 While it's on, Tab Guard sends these events to [Aptabase](https://aptabase.com), an
-open-source, privacy-focused analytics service:
+open-source analytics service:
 
 | Event | When | Details sent |
 |---|---|---|
-| `app_started` | Tab Guard starts | the mode (Watch only, Warn then close, Close at limit) |
-| `tab_closed` | a tab is closed | which rule closed it: per-tab limit, whole-browser limit, or you |
+| `app_started` | Tab Guard starts | the mode (Watch only, Warn, then close, or Close at limit) |
+| `tab_closed` | a tab process is closed | which rule closed it: per-tab limit, whole-browser limit, or you |
 | `whole_browser_paused` | the whole-browser limit backs off | why: closing didn't help, or the hourly cap |
 | `mode_changed` | you switch modes | the new mode |
 
-Every event also carries the Tab Guard version, the macOS version, and a random session ID
-that's new each time Tab Guard starts. Nothing ties sessions together or to you.
+Every event also carries its time, the Tab Guard and macOS versions, whether it's a development
+build, and a random session ID that's new each time Tab Guard starts. Tab Guard sends nothing that
+links one session to another.
 
 Never sent: website addresses, tab titles, process names or IDs, memory or CPU figures, your
 name, account, computer name, or any lasting identifier. Aptabase processes the IP address and
