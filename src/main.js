@@ -49,10 +49,29 @@ async function refresh() {
     lastJson = json;
     view = next;
     render();
+    fitWindow();
   } catch (e) {
     $("#headline").textContent = "Couldn't reach Tab Guard";
     $("#subline").textContent = String(e);
   }
+}
+
+let fitted = false;
+/** Once, after the first render: size the window to the tallest tab so none
+ *  of them scrolls (the app caps it at the screen's height). */
+function fitWindow() {
+  if (fitted) return;
+  fitted = true;
+  const panels = [...document.querySelectorAll(".panel")];
+  const shown = panels.find((p) => !p.hidden);
+  const style = getComputedStyle(document.body);
+  let tallest = 0;
+  for (const p of panels) {
+    for (const q of panels) q.hidden = q !== p;
+    tallest = Math.max(tallest, $("main").getBoundingClientRect().bottom - document.body.getBoundingClientRect().top);
+  }
+  for (const q of panels) q.hidden = q !== shown;
+  invoke("fit_window", { height: tallest + parseFloat(style.paddingBottom) }).catch(() => {});
 }
 
 function render() {
@@ -289,14 +308,18 @@ $("#welcome-done").addEventListener("click", () =>
 
 $("#check-updates").addEventListener("click", async (e) => {
   e.target.disabled = true;
+  $("#update-status").textContent = "Checking…";
+  let text;
   try {
-    toast(await invoke("check_for_updates"));
+    text = await invoke("check_for_updates");
   } catch (err) {
-    toast(String(err), true);
-  } finally {
-    e.target.disabled = false;
-    refresh();
+    text = String(err);
   }
+  // The result shows under the button, where the user is looking.
+  $("#update-status").textContent = text;
+  announce(text);
+  e.target.disabled = false;
+  refresh();
 });
 
 $("#about-processes").addEventListener("click", async (e) => {
