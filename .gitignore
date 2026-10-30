@@ -5,3 +5,4 @@ src-tauri/gen/
 CLAUDE.md
 test-results/
 playwright-report/
+HANDOFF*.md
