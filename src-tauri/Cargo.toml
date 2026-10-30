@@ -1,6 +1,6 @@
 [package]
 name = "tab-guard"
-version = "1.0.0"
+version = "1.0.1"
 description = "Menu-bar watchdog that stops runaway browser tabs from eating the Mac's memory"
 edition = "2021"
 publish = false

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.1
+
+- A browser that updated itself while it was open is recognised again. Chrome keeps a hard link
+  to its executable in a clone of its bundle, so its signature survives an update; once the update
+  lands, macOS names the running browser by that link, outside the app, and Tab Guard listed each
+  of its helpers as a browser of its own ("Google Chrome" through "Google Chrome (12)"). Tab Guard
+  now also knows a process by the path it was started by.
+- When a browser's main process can't be seen at all, its helpers are listed as one browser named
+  after the app, not one each, and its limits still apply to them together.
+- The download is Install-Tab-Guard.dmg, and a release lists only it and the updater's manifest;
+  the updater's own files are parked on the Updater files pre-release.
+- The README and the site say that a tab which notifies you, like WhatsApp Web or Gmail, goes
+  quiet once closed until you go back and reload it, and how to keep that from happening.
+
 ## 1.0.0
 
 First public release.
