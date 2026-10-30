@@ -2,9 +2,10 @@
 
 A free macOS menu-bar app that stops runaway browser tabs from taking over your Mac.
 
-**[Download the latest release](https://github.com/AllenBW/tab-guard/releases/latest)**: open the
-`.dmg` and drag Tab Guard to Applications. macOS 13 or later, Apple silicon and Intel; signed,
-notarized, and it updates itself.
+**[Download Install-Tab-Guard.dmg](https://github.com/AllenBW/tab-guard/releases/latest/download/Install-Tab-Guard.dmg)**:
+open it and drag Tab Guard to Applications. macOS 13 or later, Apple silicon and Intel; signed,
+notarized, and it updates itself. The [release notes](https://github.com/AllenBW/tab-guard/releases/latest)
+list what changed; the other files there are for the updater.
 
 ## Why
 

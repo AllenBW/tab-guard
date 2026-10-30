@@ -12,11 +12,14 @@ once a draft is published, so every release gets a quick smoke test first.
    ```bash
    git tag vX.Y.Z && git push origin main vX.Y.Z
    ```
-3. Wait for **Release Build (Draft)** (about 15 minutes), then download the DMG from the draft
-   release and check: it opens without a Gatekeeper warning, the menu-bar icon appears, the
+3. Wait for **Release Build (Draft)** (about 15 minutes), then download Install-Tab-Guard.dmg from the
+   draft release and check: it opens without a Gatekeeper warning, the menu-bar icon appears, the
    window opens, and **Which site is which?** opens about:processes in Firefox and
    chrome://process-internals in Chrome.
 4. Publish the draft. Installed copies pick it up within 6 hours (or on **Check for updates**).
+   The disk image is the only file a person needs, and its name carries no version so the page's
+   download link never changes. The other assets (`latest.json`, the `.app.tar.gz` and its `.sig`)
+   are the updater's and keep the names tauri-action gives them.
 
 ## One-time setup
 

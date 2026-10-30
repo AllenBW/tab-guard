@@ -61,7 +61,7 @@ jobs:
             echo "body<<NOTES_EOF"
             cat notes.md
             echo
-            echo "**Install:** download the .dmg below, open it, and drag Tab Guard to Applications."
+            echo "**Install:** download **Install-Tab-Guard.dmg** (the first file below), open it, and drag Tab Guard to Applications. The other files are for Tab Guard's automatic updater and the source code; you don't need them."
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -114,10 +114,12 @@ jobs:
             --team-id "$APPLE_TEAM_ID" --wait --timeout 30m
           xcrun stapler staple "$DMG"
           spctl -a -t open --context context:primary-signature -v "$DMG"
-          # GitHub names assets with dots for spaces; match that so --clobber replaces the old one.
-          UPLOAD="$RUNNER_TEMP/$(basename "$DMG" | tr " " .)"
-          cp "$DMG" "$UPLOAD"
-          gh release upload "$TAG" "$UPLOAD" --clobber
+          # Replace the copy tauri-action uploaded (GitHub names assets with dots for spaces) with one
+          # named for the person installing. The name carries no version so the page's download link,
+          # releases/latest/download/Install-Tab-Guard.dmg, never changes.
+          gh release delete-asset "$TAG" "$(basename "$DMG" | tr " " .)" --yes
+          cp "$DMG" "$RUNNER_TEMP/Install-Tab-Guard.dmg"
+          gh release upload "$TAG" "$RUNNER_TEMP/Install-Tab-Guard.dmg" --clobber
 
       - name: Clean up the keychain
         if: always()
