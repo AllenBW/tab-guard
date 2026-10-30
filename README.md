@@ -132,7 +132,7 @@ usage counts.
 - `node scripts/preview-server.mjs` serves the window's UI at http://localhost:5174 with a
   fake backend, for layout work without rebuilding.
 - `pnpm icons` redraws the icons from `scripts/make-icons.mjs`.
-- [RELEASING.md](RELEASING.md) covers signed releases; `docs/` is the project page.
+- [RELEASING.md](RELEASING.md) covers signed releases; `website/` is the project page, deployed to GitHub Pages by `.github/workflows/pages.yml`.
 
 ## License
 
