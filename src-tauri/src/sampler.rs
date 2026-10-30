@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -109,9 +109,10 @@ pub fn key_name(key: &str) -> String {
 enum Known {
     NotBrowser,
     /// `start` tells a reused pid apart from the process we classified.
-    /// `named` is false for a Firefox content process whose name macOS
-    /// hasn't been asked for yet (see `content_names`).
-    Browser { kind: Kind, start: u64, parent: u32, family: Family, app: String, profile: Option<String>, named: bool },
+    /// `content` marks a Firefox content process, whose kind comes from
+    /// the name it gives macOS; `named` says that name has been seen (see
+    /// `name_content`).
+    Browser { kind: Kind, start: u64, parent: u32, family: Family, app: String, profile: Option<String>, content: bool, named: bool },
 }
 
 /// What grouping needs to know about one browser process.
@@ -137,12 +138,17 @@ pub struct Sampler {
     /// App bundle -> the name of its main executable, read once per app.
     main_exe: HashMap<String, String>,
     pid_buf: Vec<libc::pid_t>,
+    /// When Firefox content processes' names were last read.
+    names_read: Option<Instant>,
 }
 
 const HISTORY_WINDOW_SECS: u64 = 300;
 /// How long to wait for a new Firefox content process to name itself
 /// before treating it as a tab without one.
 const NAME_WAIT_SECS: u64 = 30;
+/// How often to read the names again: Firefox renames a spare process
+/// when it gives it a job.
+const NAME_REFRESH: Duration = Duration::from_secs(15);
 const MB: u64 = 1024 * 1024;
 
 impl Sampler {
@@ -156,6 +162,7 @@ impl Sampler {
             history: HashMap::new(),
             main_exe: HashMap::new(),
             pid_buf: Vec::new(),
+            names_read: None,
         }
     }
 
@@ -219,7 +226,7 @@ impl Sampler {
             members.push((pid, kind, parent, start));
         }
 
-        self.name_content(&mut procs, &mut members);
+        self.name_content(now, &mut procs, &mut members);
 
         let members: Vec<Member> = members
             .iter()
@@ -241,18 +248,25 @@ impl Sampler {
     /// Firefox starts every content process the same way, so its arguments
     /// can't tell a tab from the extensions process or the one for its own
     /// about: pages. Each one does name itself to macOS ("FirefoxCP
-    /// WebExtensions"), so new ones are looked up there, once.
-    fn name_content(&mut self, procs: &mut [Proc], members: &mut [(u32, Kind, u32, u64)]) {
-        let unnamed = |k: &Known| matches!(k, Known::Browser { named: false, .. });
-        if !self.known.values().any(unnamed) {
+    /// WebExtensions"), so the names are read from there: on every pass
+    /// while a new process hasn't named itself yet, and every NAME_REFRESH
+    /// otherwise, because a spare process starts as "Web Content" and is
+    /// renamed when Firefox gives it a job.
+    fn name_content(&mut self, now: Instant, procs: &mut [Proc], members: &mut [(u32, Kind, u32, u64)]) {
+        let content = |k: &Known| matches!(k, Known::Browser { content: true, .. });
+        if !self.known.values().any(content) {
             return;
         }
-        let names = content_names();
+        let unnamed = self.known.values().any(|k| matches!(k, Known::Browser { content: true, named: false, .. }));
+        let due = self.names_read.is_none_or(|t| now.duration_since(t) >= NAME_REFRESH);
+        if !unnamed && !due {
+            return;
+        }
+        // Couldn't read them: keep what's known and try again next pass.
+        let Some(names) = content_names() else { return };
+        self.names_read = Some(now);
         for p in procs.iter_mut() {
-            let Some(Known::Browser { kind, named, .. }) = self.known.get_mut(&p.pid) else { continue };
-            if *named {
-                continue;
-            }
+            let Some(Known::Browser { kind, content: true, named, .. }) = self.known.get_mut(&p.pid) else { continue };
             match names.get(&p.pid) {
                 Some(name) => {
                     *kind = gecko_content_kind(name);
@@ -276,13 +290,31 @@ pub fn gecko_content_kind(name: &str) -> Kind {
     if name.ends_with("Web Content") || name.ends_with("File Content") { Kind::Tab } else { Kind::Other }
 }
 
-/// pid -> the name each running process gave macOS, from `lsappinfo list`.
-fn content_names() -> HashMap<u32, String> {
-    std::process::Command::new("/usr/bin/lsappinfo")
-        .arg("list")
-        .output()
-        .map(|o| parse_lsappinfo(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default()
+/// pid -> the name each running process gave macOS, from `lsappinfo list`,
+/// or None if it failed or took more than a few seconds.
+fn content_names() -> Option<HashMap<u32, String>> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("/usr/bin/lsappinfo").arg("list").stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read as it writes, so a long list can't fill the pipe and stall.
+    let reader = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).ok().map(|_| text)
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    Some(parse_lsappinfo(&reader.join().ok()??))
 }
 
 /// Each entry starts `12) "Name" ASN:…` and has a `pid = 123 …` line.
@@ -314,8 +346,8 @@ fn identify(pid: u32, main_exe: &mut HashMap<String, String>) -> Known {
     let kind = classify(family, &path, &args, is_main);
     // Chromium browsers run every profile in one process; Firefox runs one per profile.
     let profile = if kind == Kind::Main && family == Family::Gecko { profile_name(&args) } else { None };
-    let named = !(family == Family::Gecko && kind == Kind::Tab);
-    Known::Browser { kind, start, parent: parent_pid(pid), family, app: app.to_string(), profile, named }
+    let content = family == Family::Gecko && kind == Kind::Tab;
+    Known::Browser { kind, start, parent: parent_pid(pid), family, app: app.to_string(), profile, content, named: !content }
 }
 
 /// The outermost app bundle a path is in: "/Applications/Google
@@ -534,6 +566,11 @@ fn proc_args(pid: u32) -> Option<Vec<String>> {
 
 /// Unlike resident size, the physical footprint doesn't count memory shared
 /// with other processes, so footprints can be summed.
+/// When a process started, in Mach time, so a reused pid can be told from it.
+pub fn proc_start(pid: u32) -> Option<u64> {
+    rusage(pid).map(|r| r.ri_proc_start_abstime)
+}
+
 fn rusage(pid: u32) -> Option<libc::rusage_info_v2> {
     let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
     let rc = unsafe {

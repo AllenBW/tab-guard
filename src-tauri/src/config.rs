@@ -39,9 +39,11 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// The warning level never sits above the close limit. The close limit
+    /// wins, since in Close at limit the warning level isn't used at all.
     fn sanitized(mut self) -> Limits {
-        self.warn_mb = self.warn_mb.max(100);
-        self.kill_mb = self.kill_mb.max(self.warn_mb);
+        self.kill_mb = self.kill_mb.max(100);
+        self.warn_mb = self.warn_mb.clamp(100, self.kill_mb);
         self
     }
 }
@@ -78,9 +80,6 @@ pub struct Config {
     pub idle_cpu_percent: f32,
     /// macOS notification when a tab is closed.
     pub notify_on_close: bool,
-    /// Send anonymous usage counts (see `usage.rs`). Off unless the user
-    /// turns it on.
-    pub share_usage: bool,
     /// Download and install new versions without asking.
     pub auto_update: bool,
     /// The user has seen the welcome card in the window.
@@ -107,7 +106,6 @@ impl Default for Config {
             prefer_idle: true,
             idle_cpu_percent: 2.0,
             notify_on_close: false,
-            share_usage: false,
             auto_update: true,
             welcomed: false,
             browser_limits: BTreeMap::new(),
@@ -146,8 +144,8 @@ impl Config {
 
     /// Clamp values the UI or a hand-edited file could get wrong.
     pub fn sanitized(mut self) -> Config {
-        self.warn_mb = self.warn_mb.max(100);
-        self.kill_mb = self.kill_mb.max(self.warn_mb);
+        self.kill_mb = self.kill_mb.max(100);
+        self.warn_mb = self.warn_mb.clamp(100, self.kill_mb);
         for l in self.browser_limits.values_mut() {
             *l = l.sanitized();
         }
@@ -178,7 +176,6 @@ mod tests {
         assert_eq!(c.mode, Mode::Watch);
         assert!(!c.mode.closes());
         assert!(c.warn_mb < c.kill_mb);
-        assert!(!c.share_usage, "usage sharing is opt-in");
         assert!(c.auto_update);
     }
 
@@ -210,7 +207,7 @@ mod tests {
         assert_eq!(c.kill_mb, 4096);
         assert_eq!(c.warn_mb, Config::default().warn_mb);
         assert_eq!((c.total_backoff_mins, c.total_max_per_hour), (15, 3), "settings saved before these existed");
-        assert!(!c.share_usage && !c.welcomed, "older installs are asked too");
+        assert!(!c.welcomed, "older installs see the welcome too");
         std::fs::remove_dir_all(d).unwrap();
     }
 

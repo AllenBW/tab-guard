@@ -105,9 +105,9 @@ log in**. To remove it: quit it from the menu bar, then delete Tab Guard from Ap
 
 ## Privacy and updates
 
-Tab Guard runs on your Mac. Anonymous usage counts are off unless you turn them on;
-[PRIVACY.md](PRIVACY.md) lists exactly what's sent. Updates are checked on GitHub every 6 hours
-and installed automatically (you can turn that off in **Limits & settings → General**).
+Tab Guard sends nothing about you or your browsing: no analytics, no accounts, no telemetry.
+The only thing it fetches is its own update from GitHub, every 6 hours, and you can turn that off
+in **Limits & settings → General**. [PRIVACY.md](PRIVACY.md) has the details.
 
 ## Build from source
 
@@ -120,8 +120,7 @@ cp -R "src-tauri/target/release/bundle/macos/Tab Guard.app" ~/Applications/
 open ~/Applications/"Tab Guard.app"
 ```
 
-Builds from source can't update themselves (that needs the release signing key) and never send
-usage counts.
+Builds from source can't update themselves (that needs the release signing key).
 
 ## Development
 

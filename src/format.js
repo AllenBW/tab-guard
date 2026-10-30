@@ -89,8 +89,13 @@ export function settingsToConfig(current, form, target = null) {
     total_mb: Math.round(num(form.total_gb, was.total_mb / 1024) * 1024),
     total_min_victim_mb: Math.round(num(form.total_min_victim_mb, was.total_min_victim_mb)),
   };
+  const sameLimits = Object.keys(limits).every((k) => limits[k] === was[k]);
+  // A browser gets its own copy only when one of its limits was changed, not
+  // when another setting was saved while it happened to be picked.
   const placed =
-    target == null ? limits : { browser_limits: { ...(current.browser_limits ?? {}), [target]: limits } };
+    target == null ? limits
+    : sameLimits ? {}
+    : { browser_limits: { ...(current.browser_limits ?? {}), [target]: limits } };
   return {
     ...current,
     ...placed,
@@ -101,7 +106,6 @@ export function settingsToConfig(current, form, target = null) {
     interval_secs: Math.round(num(form.interval_secs, current.interval_secs)),
     kill_cooldown_secs: Math.round(num(form.kill_cooldown_secs, current.kill_cooldown_secs)),
     notify_on_close: Boolean(form.notify_on_close),
-    share_usage: Boolean(form.share_usage),
     auto_update: Boolean(form.auto_update),
   };
 }

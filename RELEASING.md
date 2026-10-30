@@ -32,10 +32,6 @@ Repository secrets (Settings → Secrets and variables → Actions):
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.tauri/tab-guard.key` (update signing) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | contents of `~/.tauri/tab-guard.key.password` |
 
-Repository variable (not secret: it ships inside the app): `APTABASE_APP_KEY`, the Aptabase
-app key (`A-US-…` or `A-EU-…`). Without it, builds never send usage counts and don't offer the
-setting.
-
 The update-signing key pair lives in `~/.tauri/`; keep a copy in the password manager. **If it's
 lost, installed copies can't update** and everyone has to reinstall by hand. Its public half is
 `plugins.updater.pubkey` in `tauri.conf.json`.
