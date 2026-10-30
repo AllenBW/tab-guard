@@ -42,6 +42,11 @@ left alone.
   place in a video. **Don't let Tab Guard close tabs while you're doing critical work.** Pause it
   from the menu bar (**Pause › For 1 hour** turns itself back on afterwards), or keep it in
   **Watch only**, during calls, presentations, exams or long forms.
+- **A closed tab goes quiet.** Web apps that notify you from a tab, like WhatsApp Web or Gmail,
+  grow like any other tab and get closed like any other. A crashed tab sends no notifications until
+  you go back to it and reload. **Spare** that tab's process in the window (it holds until the
+  process exits or Tab Guard restarts), keep Tab Guard in **Watch only**, or turn on **Show a
+  notification when a tab is closed** in Limits & settings so you know to go back.
 - **One process can hold several tabs.** Browsers sometimes put tabs from the same site in one
   process, so closing it crashes all of them. In Chrome-family browsers a page's embedded frames
   can run in their own process; closing one breaks that part of the page.
