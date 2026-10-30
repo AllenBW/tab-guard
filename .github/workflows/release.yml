@@ -99,6 +99,26 @@ jobs:
           prerelease: false
           args: --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
 
+      - name: Notarize and staple the disk image
+        # tauri-action notarizes and staples the app but only signs the disk image around it.
+        # Gatekeeper assesses the image too when a download is opened, so notarize it as well and
+        # replace the copy tauri-action already uploaded to the draft.
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" -print -quit)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait --timeout 30m
+          xcrun stapler staple "$DMG"
+          spctl -a -t open --context context:primary-signature -v "$DMG"
+          # GitHub names assets with dots for spaces; match that so --clobber replaces the old one.
+          UPLOAD="$RUNNER_TEMP/$(basename "$DMG" | tr " " .)"
+          cp "$DMG" "$UPLOAD"
+          gh release upload "$TAG" "$UPLOAD" --clobber
+
       - name: Clean up the keychain
         if: always()
         run: |
