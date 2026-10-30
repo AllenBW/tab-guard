@@ -45,7 +45,7 @@ left alone.
 - **It judges by memory only.** A tab that burns CPU or battery without growing isn't closed.
 - **It can't tell which website a process is.** Browsers don't tell other apps that. It acts on
   how much a process uses, never on which site it is; Firefox's about:processes page and Chrome's
-  Task Manager show the site behind each process ID.
+  chrome://process-internals page show the site behind each process ID.
 - **Not all of a browser's memory is in its tabs.** Closing tabs can't bring that part down,
   which is why the whole-browser limit backs off when closes don't help.
 - **It starts in Watch only.** Nothing is closed until you choose a closing mode, so you can see
@@ -73,7 +73,8 @@ Limits (all editable in **Limits & settings**, separately for each browser):
 In the window, **Spare** protects a tab process until it exits and **Close** closes one now. With
 more than one browser running, the process list can be filtered to one of them. **Which site is
 which?** opens Firefox's about:processes page (macOS asks once whether Tab Guard may control
-Firefox) or brings a Chrome-family browser forward and says where its Task Manager is.
+Firefox) or chrome://process-internals in a Chrome-family browser, where each tab's frames are
+listed with their site and process ID.
 
 Settings: `~/Library/Application Support/local.tabguard/config.json`
 Activity log: `~/Library/Logs/Tab Guard.log`
