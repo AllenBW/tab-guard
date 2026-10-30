@@ -103,6 +103,18 @@ button.danger { color: var(--over); }
 }
 .toast.error { border-color: var(--over); color: var(--over); }
 button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 5px 16px; }
+
+.welcome {
+  margin-top: 14px; padding: 14px 16px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--accent);
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+.welcome h2 { font-size: 15px; margin: 0; }
+.welcome p { margin: 0; max-width: 72ch; }
+.welcome label.check { display: flex; gap: 8px; align-items: flex-start; }
+.welcome label.check input { margin-top: 3px; }
+[hidden] { display: none !important; }
 
 .tabs { display: flex; gap: 4px; margin-top: 18px; border-bottom: 1px solid var(--border); }
 .tabs button {

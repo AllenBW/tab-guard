@@ -74,6 +74,11 @@ function render() {
   banner.className = config.enabled ? "banner" : "banner paused";
   banner.textContent = text ?? "";
 
+  $("#welcome").hidden = config.welcomed;
+  for (const el of document.querySelectorAll(".usage-row")) el.hidden = !view.usage_available;
+  $("#version").textContent = `Version ${view.version}`;
+  $("#update-status").textContent = view.update_status;
+
   $("#checked").textContent = s.checked_at ? `Checked ${timeOf(s.checked_at)}` : "";
   renderRows(config, s);
   renderEvents(events);
@@ -172,12 +177,15 @@ function fillSettings(c) {
   form.interval_secs.value = c.interval_secs;
   form.kill_cooldown_secs.value = c.kill_cooldown_secs;
   form.notify_on_close.checked = c.notify_on_close;
+  form.share_usage.checked = c.share_usage;
+  form.auto_update.checked = c.auto_update;
 }
 
 function readSettings() {
   const value = (name) => (form[name].type === "checkbox" ? form[name].checked : form[name].value);
   const names = ["warn_gb", "kill_gb", "total_gb", "total_min_victim_mb", "total_backoff_mins", "total_max_per_hour",
-    "prefer_idle", "idle_cpu_percent", "interval_secs", "kill_cooldown_secs", "notify_on_close"];
+    "prefer_idle", "idle_cpu_percent", "interval_secs", "kill_cooldown_secs", "notify_on_close", "share_usage",
+    "auto_update"];
   return settingsToConfig(view.config, Object.fromEntries(names.map((n) => [n, value(n)])));
 }
 
@@ -224,6 +232,22 @@ for (const t of document.querySelectorAll(".tabs button")) {
     }
   });
 }
+
+$("#welcome-done").addEventListener("click", () =>
+  saveConfig({ ...view.config, welcomed: true, share_usage: view.usage_available && $("#welcome-usage").checked }),
+);
+
+$("#check-updates").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  try {
+    toast(await invoke("check_for_updates"));
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    e.target.disabled = false;
+    refresh();
+  }
+});
 
 $("#about-processes").addEventListener("click", async (e) => {
   e.target.disabled = true;

@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "Developer ID Application: allen manzano-wight (B6J5X2WZ98)"
+    }
+  }
+}

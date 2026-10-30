@@ -1,6 +1,10 @@
 # Tab Guard
 
-A macOS menu-bar app that keeps Firefox tabs from taking over the Mac's memory.
+A free macOS menu-bar app that keeps Firefox tabs from taking over the Mac's memory.
+
+**[Download the latest release](https://github.com/AllenBW/tab-guard/releases/latest)**: open the
+`.dmg` and drag Tab Guard to Applications. macOS 13 or later, Apple silicon and Intel; signed,
+notarized, and it updates itself.
 
 macOS has no way to cap one app's memory, so Tab Guard watches instead. It checks
 every Firefox process every 15 seconds, flags the tab processes that pass your
@@ -35,7 +39,17 @@ Guard may control Firefox) and also puts the address on the clipboard as a fallb
 Settings: `~/Library/Application Support/local.tabguard/config.json`
 Activity log: `~/Library/Logs/Tab Guard.log`
 
-## Build and install
+On first launch it opens its window with a short welcome, and turns on **Start Tab Guard when I
+log in**. To remove it: quit it from the menu bar, then delete Tab Guard from Applications and
+`~/Library/LaunchAgents/Tab Guard.plist`.
+
+## Privacy and updates
+
+Everything runs on your Mac. Anonymous usage counts are off unless you turn them on;
+[PRIVACY.md](PRIVACY.md) lists exactly what's sent. Updates are checked on GitHub every 6 hours
+and installed automatically (you can turn that off in **Limits & settings → Updates**).
+
+## Build from source
 
 Needs Rust, Node and pnpm.
 
@@ -46,10 +60,8 @@ cp -R "src-tauri/target/release/bundle/macos/Tab Guard.app" ~/Applications/
 open ~/Applications/"Tab Guard.app"
 ```
 
-On first launch it opens its window and turns on **Start Tab Guard when I log in**.
-
-To remove it: quit it from the menu bar, then delete `~/Applications/Tab Guard.app`
-and `~/Library/LaunchAgents/Tab Guard.plist`.
+Builds from source can't update themselves (that needs the release signing key) and never send
+usage counts.
 
 ## Development
 
@@ -59,3 +71,8 @@ and `~/Library/LaunchAgents/Tab Guard.plist`.
 - `node scripts/preview-server.mjs` serves the window's UI at http://localhost:5174 with a
   fake backend, for layout work without rebuilding.
 - `pnpm icons` redraws the icons from `scripts/make-icons.mjs`.
+- [RELEASING.md](RELEASING.md) covers signed releases; `docs/` is the project page.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
