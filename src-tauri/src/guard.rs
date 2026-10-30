@@ -129,6 +129,27 @@ pub struct Guard {
     pub snapshot: Snapshot,
 }
 
+/// When "Pause until tomorrow" ends: 6 in the morning, local time, on the
+/// next day.
+pub fn tomorrow_morning(now_unix: u64) -> u64 {
+    let t = now_unix as libc::time_t;
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    tm.tm_mday += 1;
+    tm.tm_hour = 6;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    unsafe { libc::mktime(&mut tm) as u64 }
+}
+
+/// "14:30", or "tomorrow 06:00" when it's on a later day.
+pub fn pause_end_text(until: u64, now_unix: u64) -> String {
+    let (end, now) = (local_time(until), local_time(now_unix));
+    let day = if end[..10] == now[..10] { "" } else { "tomorrow " };
+    format!("{day}{}", &end[11..16])
+}
+
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -196,8 +217,13 @@ impl Guard {
     pub fn apply_config(&mut self, cfg: Config) {
         let cfg = cfg.sanitized();
         let old = self.config.clone();
-        if old.enabled != cfg.enabled {
-            self.push_event("info", if cfg.enabled { "Tab Guard turned on".into() } else { "Tab Guard paused".into() });
+        if (old.enabled, old.paused_until) != (cfg.enabled, cfg.paused_until) {
+            let text = match (cfg.enabled, cfg.paused_until) {
+                (true, _) => "Tab Guard turned on".to_string(),
+                (false, Some(until)) => format!("Tab Guard paused until {}", pause_end_text(until, unix_now())),
+                (false, None) => "Tab Guard paused until you turn it back on".to_string(),
+            };
+            self.push_event("info", text);
         }
         if old.mode != cfg.mode {
             self.push_event("info", format!("Mode changed to “{}”", cfg.mode.label()));
@@ -235,6 +261,26 @@ impl Guard {
         }
         // Re-log flags under the new rules.
         self.logged.clear();
+    }
+
+    /// Turn back on when a timed pause is over. True if it did.
+    pub fn resume_if_due(&mut self, now_unix: u64) -> bool {
+        match self.config.paused_until {
+            Some(until) if !self.config.enabled && now_unix >= until => {
+                self.config.enabled = true;
+                self.config.paused_until = None;
+                if let Some(dir) = self.config_dir.clone() {
+                    if let Err(e) = self.config.save(&dir) {
+                        self.push_event("info", format!("Couldn't save settings: {e}"));
+                    }
+                }
+                self.push_event("info", "Your pause is over: Tab Guard is back on".into());
+                // Re-log flags now that they count again.
+                self.logged.clear();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn cooldown_left(&self, now: Instant) -> Duration {
@@ -561,7 +607,7 @@ mod tests {
     fn pausing_stops_closing() {
         let mut g = guard(Mode::Close);
         g.apply_config(Config { enabled: false, ..g.config.clone() });
-        assert_eq!(g.events().next().unwrap().text, "Tab Guard paused");
+        assert_eq!(g.events().next().unwrap().text, "Tab Guard paused until you turn it back on");
         assert!(run(&mut g, &[tab(1, 5000)], Instant::now()).is_empty());
     }
 
@@ -889,6 +935,42 @@ mod tests {
         let view = g.view();
         let t: Vec<(&str, bool, bool)> = view.limit_targets.iter().map(|t| (t.name.as_str(), t.running, t.own)).collect();
         assert_eq!(t, [("Firefox", true, false), ("Firefox Nightly", true, true), ("Firefox Beta", false, true)]);
+    }
+
+    #[test]
+    fn a_timed_pause_turns_itself_back_on() {
+        let mut g = guard(Mode::Close);
+        let now = unix_now();
+        g.apply_config(Config { enabled: false, paused_until: Some(now + 3600), ..g.config.clone() });
+        assert!(g.events().next().unwrap().text.starts_with("Tab Guard paused until "));
+        assert!(run(&mut g, &[tab(1, 5000)], Instant::now()).is_empty(), "nothing closes while paused");
+        assert!(!g.resume_if_due(now + 3599));
+        assert!(g.resume_if_due(now + 3600));
+        assert!(g.config.enabled && g.config.paused_until.is_none());
+        assert_eq!(g.events().next().unwrap().text, "Your pause is over: Tab Guard is back on");
+        assert_eq!(run(&mut g, &[tab(1, 5000)], Instant::now()), [1]);
+        assert!(!g.resume_if_due(now + 9999), "only once");
+    }
+
+    #[test]
+    fn a_pause_until_you_turn_it_back_on_stays() {
+        let mut g = guard(Mode::Close);
+        g.apply_config(Config { enabled: false, paused_until: None, ..g.config.clone() });
+        assert_eq!(g.events().next().unwrap().text, "Tab Guard paused until you turn it back on");
+        assert!(!g.resume_if_due(u64::MAX));
+        assert!(!g.config.enabled);
+    }
+
+    #[test]
+    fn tomorrow_morning_is_six_the_next_day() {
+        let now = 1_793_178_785; // 2026-10-28 09:13 UTC
+        let t = tomorrow_morning(now);
+        assert!(t > now && t - now < 48 * 3600);
+        let local = local_time(t);
+        assert_eq!(&local[11..19], "06:00:00");
+        assert_ne!(&local[..10], &local_time(now)[..10]);
+        assert_eq!(pause_end_text(t, now), "tomorrow 06:00");
+        assert_eq!(pause_end_text(now + 60, now).len(), 5, "later today: just the time");
     }
 
     #[test]

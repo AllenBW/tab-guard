@@ -51,6 +51,9 @@ impl Limits {
 pub struct Config {
     /// Master switch; when false nothing is checked or closed.
     pub enabled: bool,
+    /// While paused, when to turn back on by itself (Unix seconds). None
+    /// pauses until the user turns it back on.
+    pub paused_until: Option<u64>,
     pub mode: Mode,
     /// A tab process past this is flagged.
     pub warn_mb: u64,
@@ -91,6 +94,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             enabled: true,
+            paused_until: None,
             mode: Mode::Watch,
             warn_mb: 1024,
             kill_mb: 2048,
@@ -150,6 +154,9 @@ impl Config {
         self.interval_secs = self.interval_secs.clamp(3, 600);
         self.idle_cpu_percent = self.idle_cpu_percent.clamp(0.0, 100.0);
         self.total_backoff_mins = self.total_backoff_mins.min(24 * 60);
+        if self.enabled {
+            self.paused_until = None;
+        }
         self
     }
 }
@@ -247,6 +254,14 @@ mod tests {
         c.save(&d).unwrap();
         assert_eq!(Config::load(&d).limits_for(dev), l);
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_pause_end_only_counts_while_paused() {
+        let c = Config { enabled: true, paused_until: Some(5), ..Config::default() }.sanitized();
+        assert_eq!(c.paused_until, None);
+        let c = Config { enabled: false, paused_until: Some(5), ..Config::default() }.sanitized();
+        assert_eq!(c.paused_until, Some(5));
     }
 
     #[test]

@@ -26,7 +26,9 @@ const mock = `
     : { id: 90001, name: "Firefox Nightly", family: "gecko", key: "/Applications/Firefox Nightly.app" };
   const tab = (pid, mem_mb, cpu, age_secs, growth_mb_per_min = 0, browser = 48857) =>
     ({ pid, browser, kind: "tab", mem_mb, cpu, age_secs, growth_mb_per_min, status: "ok", reason: null, action: null });
-  let config = { enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
+  // ?paused=hour starts in a pause that ends in an hour.
+  const pausedForAnHour = new URLSearchParams(location.search).get("paused") === "hour";
+  let config = { enabled: !pausedForAnHour, paused_until: pausedForAnHour ? now() + 3600 : null, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
     total_backoff_mins: 15, total_max_per_hour: 3, share_usage: false, auto_update: true, welcomed: false,
     interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false,
     browser_limits: {} };

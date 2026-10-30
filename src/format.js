@@ -40,8 +40,18 @@ export function summaryParts(s) {
   return parts.join(" · ");
 }
 
+/** When a pause ends, as the menu bar says it: "14:30", or "tomorrow 06:00". */
+export function pauseEnd(until, now = Date.now() / 1000) {
+  const end = new Date(until * 1000);
+  const hhmm = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
+  return end.toDateString() === new Date(now * 1000).toDateString() ? hhmm : `tomorrow ${hhmm}`;
+}
+
 /** What the banner under the mode switch says, or null for no banner. */
-export function bannerText(config, s) {
+export function bannerText(config, s, now = Date.now() / 1000) {
+  if (!config.enabled && config.paused_until) {
+    return `Tab Guard is paused until ${pauseEnd(config.paused_until, now)}, then turns itself back on. It's still measuring, but won't flag or close anything until then.`;
+  }
   if (!config.enabled) {
     return "Tab Guard is paused. It's still measuring, but won't flag or close anything until you turn it back on.";
   }

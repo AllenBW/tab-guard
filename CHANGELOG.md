@@ -9,6 +9,9 @@ First public release.
   (Zen, LibreWolf, Waterfox, Floorp, Mullvad Browser, Tor Browser) and Chrome and browsers built
   on Chromium (Edge, Brave, Arc, Vivaldi, Opera).
 - Three modes: Watch only (the default), Warn then close, and Close at limit.
+- The menu-bar shield shows the state by color (green guarding, orange worth a look, red
+  closing) and is struck through while paused. Pause for an hour or until tomorrow and Tab Guard
+  turns itself back on.
 - The whole-browser limit backs off when closing tabs doesn't bring the browser down, and closes
   at most 3 tabs an hour.
 - Works with several browsers at once (or one browser with a second profile): each row says which

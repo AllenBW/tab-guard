@@ -41,6 +41,21 @@ test("the mode is chosen from a radio group", async ({ page }) => {
   await expect(page.getByRole("radio", { name: "Close at limit" })).toHaveAttribute("aria-checked", "true");
 });
 
+test("the switch pauses Tab Guard until it's turned back on", async ({ page }) => {
+  await open(page);
+  await page.locator("label.switch").click();
+  expect((await sent(page, "save_config")).at(-1).config).toMatchObject({ enabled: false, paused_until: null });
+  await expect(page.locator("#enabled-label")).toHaveText("Paused");
+  await expect(page.locator("#banner")).toContainText("until you turn it back on");
+});
+
+test("a timed pause from the menu bar says when it ends", async ({ page }) => {
+  await open(page, "?paused=hour");
+  await expect(page.locator("#banner")).toContainText(/^Tab Guard is paused until \d\d:\d\d, then turns itself back on/);
+  await page.locator("label.switch").click();
+  expect((await sent(page, "save_config")).at(-1).config.enabled).toBe(true);
+});
+
 test("with one Firefox, nothing about copies shows", async ({ page }) => {
   await open(page);
   await expect(page.locator("#proc-filter")).toBeHidden();
