@@ -1,4 +1,4 @@
-import { gb, mbOrGb, duration, growth, summaryParts, bannerText, settingsToConfig, esc } from "./format.js";
+import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, esc } from "./format.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -118,14 +118,42 @@ function render() {
   $("#update-status").textContent = view.update_status;
 
   $("#checked").textContent = s.checked_at ? `Checked ${timeOf(s.checked_at)}` : "";
+  renderAboutProcesses(s.browsers);
   renderRows(config, s);
   renderEvents(events);
   if (!settingsDirty) fillSettings(config);
   $("#log-path").textContent = view.log_path;
 }
 
+let aboutKey = null;
+/** "Which site is which?": one button, or one per Firefox when several run. */
+function renderAboutProcesses(browsers) {
+  const key = JSON.stringify(browsers.map((b) => [b.id, b.name]));
+  if (key === aboutKey) return;
+  aboutKey = key;
+  const el = $("#about-processes");
+  const button = (id, label, aria) =>
+    `<button type="button" class="link" data-browser="${id ?? ""}" aria-label="${esc(aria)}">${esc(label)}</button>`;
+  el.innerHTML =
+    browsers.length > 1
+      ? `Which site is which? Open about:processes in ${browsers
+          .map((b) => button(b.id, shortName(b.name), `Open about:processes in ${b.name}`))
+          .join(" ")}`
+      : button(browsers[0]?.id, "Which site is which? Open about:processes", "Which site is which? Open about:processes");
+}
+
 function renderRows(config, s) {
   const tbody = $("#rows");
+  const several = s.browsers.length > 1;
+  const names = Object.fromEntries(s.browsers.map((b) => [b.id, b.name]));
+  // With several Firefoxes, each row also says which one; a main process
+  // is just named after its Firefox.
+  const kindBadges = (r) => {
+    const browser = shortName(names[r.browser] ?? "Firefox");
+    if (!several) return `<span class="kind">${KIND_LABEL[r.kind]}</span>`;
+    if (r.kind === "main") return `<span class="kind">${esc(browser)}</span>`;
+    return `<span class="kind">${KIND_LABEL[r.kind]}</span><span class="kind browser">${esc(browser)}</span>`;
+  };
   if (!s.rows.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty">${s.checked_at ? "No Firefox processes." : "Checking…"}</td></tr>`;
     return;
@@ -140,7 +168,7 @@ function renderRows(config, s) {
       const pill = { warn: "Warning", over: r.action || "Over limit", spared: "Spared" }[r.status];
       const isTab = r.kind === "tab";
       tr.innerHTML = `
-        <td class="proc"><span class="pid">${r.pid}</span><span class="kind">${KIND_LABEL[r.kind]}</span></td>
+        <td class="proc"><span class="pid">${r.pid}</span>${kindBadges(r)}</td>
         <td><div class="mem"><div class="bar" aria-hidden="true"><div class="fill" style="width:${(100 * r.mem_mb) / scale}%"></div></div>
             <span class="val">${mbOrGb(r.mem_mb)}</span></div></td>
         <td class="num ${r.growth_mb_per_min > 5 ? "grow-up" : ""}">${growth(r.growth_mb_per_min)}</td>
@@ -151,7 +179,7 @@ function renderRows(config, s) {
         <td class="actions"></td>`;
       if (isTab) {
         const actions = tr.querySelector(".actions");
-        const what = `tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
+        const what = `${several ? `${names[r.browser] ?? "Firefox"} ` : ""}tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
         const spare = document.createElement("button");
         spare.type = "button";
         spare.dataset.pid = r.pid;
@@ -332,13 +360,16 @@ $("#check-updates").addEventListener("click", async (e) => {
 });
 
 $("#about-processes").addEventListener("click", async (e) => {
-  e.target.disabled = true;
+  const b = e.target.closest("button");
+  if (!b) return;
+  b.disabled = true;
   try {
-    toast(await invoke("open_about_processes"));
+    const browser = b.dataset.browser === "" ? null : Number(b.dataset.browser);
+    toast(await invoke("open_about_processes", { browser }));
   } catch (err) {
     toast(String(err), true);
   } finally {
-    e.target.disabled = false;
+    b.disabled = false;
   }
 });
 

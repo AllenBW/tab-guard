@@ -19,9 +19,20 @@ export function growth(mbPerMin) {
   return `${g > 0 ? "+" : ""}${g} MB/min`;
 }
 
-/** The headline's second line. */
+/** "Nightly" for "Firefox Nightly", for labels where "Firefox" goes without
+ *  saying. "Firefox" and "Firefox (work)" stay as they are. */
+export function shortName(name) {
+  const rest = name.replace(/^Firefox /, "");
+  return rest === name || rest.startsWith("(") ? name : rest;
+}
+
+/** The headline's second line. With more than one Firefox running, it
+ *  starts with each one's size. */
 export function summaryParts(s) {
   const parts = [];
+  if (s.browsers?.length > 1) {
+    parts.push(s.browsers.map((b) => `${shortName(b.name)} ${gb(b.total_mb)}`).join(" · "));
+  }
   if (s.over) parts.push(`${s.over} over a limit`);
   if (s.flagged) parts.push(`${s.flagged} past the warning level`);
   if (!parts.length) parts.push("Everything's within your limits");

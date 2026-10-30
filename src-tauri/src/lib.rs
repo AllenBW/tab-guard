@@ -72,7 +72,12 @@ fn tray_text(cfg: &Config, snap: &Snapshot) -> (Option<String>, String, String) 
         let title = (!cfg.enabled).then(|| "Paused".to_string());
         return (title, "Firefox isn't running".into(), format!("Mode: {}", cfg.mode.label()));
     }
-    let summary = format!("Firefox: {} · {} tab processes", gb(snap.total_mb), snap.tab_count);
+    // "Firefox: 9.2 GB", or "Firefox 7.1 GB · Firefox Nightly 2.3 GB".
+    let sizes = match snap.browsers.as_slice() {
+        [_, _, ..] => snap.browsers.iter().map(|b| format!("{} {}", b.name, gb(b.total_mb))).collect::<Vec<_>>().join(" · "),
+        _ => format!("Firefox: {}", gb(snap.total_mb)),
+    };
+    let summary = format!("{sizes} · {} tab processes", snap.tab_count);
     let detail = match (snap.over, snap.flagged) {
         // "Whole-browser limit paused until 08:31", without the why.
         (0, 0) if cfg.enabled && snap.total_hold.is_some() => {
@@ -225,17 +230,21 @@ fn monitor(app: AppHandle, shared: Arc<Shared>, wake: Receiver<()>) {
     std::thread::sleep(Duration::from_secs(1));
     let mut last_tray: Option<(Option<String>, String, String)> = None;
     loop {
-        let procs = sampler.sample();
+        let (procs, browsers) = sampler.sample();
         let (cfg, snap, closed, counted) = {
             let mut g = shared.guard.lock().unwrap();
-            let closed = g.pass(&procs, Instant::now(), &mut close_process);
+            let closed = g.pass(&procs, &browsers, Instant::now(), &mut close_process);
             (g.config.clone(), g.snapshot.clone(), closed, g.take_usage())
         };
         if cfg.share_usage {
             usage::send(counted.into_iter().map(usage::describe).collect());
         }
         if let (Some(c), true) = (&closed, cfg.notify_on_close) {
-            notify(&format!("Closed a Firefox tab using {}. Click Restore on the crashed tab to reload it.", gb(c.mem_mb)));
+            notify(&format!(
+                "Closed a {} tab using {}. Click Restore on the crashed tab to reload it.",
+                c.browser,
+                gb(c.mem_mb)
+            ));
         }
 
         // Tray calls block until the main thread runs them, and the main
@@ -330,10 +339,6 @@ fn run_with_timeout(cmd: &mut std::process::Command, limit: Duration) -> bool {
     }
 }
 
-/// Firefox's own page that names the site in each process. `open` can't do
-/// this (it doesn't know the about: scheme), so ask Firefox directly over
-/// Apple Events, and put the address on the clipboard as a fallback. Async so
-/// the wait runs off the main thread.
 /// The only pages the window can open, in the default browser.
 const LINKS: [(&str, &str); 6] = [
     ("project", "https://allenbw.github.io/tab-guard/"),
@@ -354,8 +359,20 @@ fn open_link(name: String) -> Result<(), String> {
     std::process::Command::new("open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Firefox's own page that names the site in each process. `open` can't do
+/// this (it doesn't know the about: scheme), so ask Firefox directly over
+/// Apple Events, and put the address on the clipboard as a fallback. With
+/// several copies running, `browser` says which one (by its app, so two
+/// profiles of the same app can't be told apart). Async so the wait runs off
+/// the main thread.
 #[tauri::command]
-async fn open_about_processes() -> Result<String, String> {
+async fn open_about_processes(browser: Option<u32>, shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    let (app, name) = {
+        let g = shared.guard.lock().unwrap();
+        let b = g.snapshot.browsers.iter().find(|b| Some(b.id) == browser).or(g.snapshot.browsers.first());
+        b.map_or(("Firefox".to_string(), "Firefox".to_string()), |b| (b.app.clone(), b.name.clone()))
+    };
+    let tell = format!("tell application \"{}\"", app.replace(['\\', '"'], ""));
     let mut pbcopy = std::process::Command::new("pbcopy");
     pbcopy.stdin(std::process::Stdio::piped());
     if let Ok(mut child) = pbcopy.spawn() {
@@ -370,7 +387,7 @@ async fn open_about_processes() -> Result<String, String> {
             "-e",
             "with timeout of 5 seconds",
             "-e",
-            "tell application \"Firefox\"",
+            &tell,
             "-e",
             "activate",
             "-e",
@@ -383,10 +400,10 @@ async fn open_about_processes() -> Result<String, String> {
         Duration::from_secs(7),
     );
     if asked {
-        Ok("Asked Firefox to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard.".into())
+        Ok(format!("Asked {name} to open about:processes. If no tab appeared, press ⌘L, then ⌘V and Return: the address is on your clipboard."))
     } else {
-        let _ = run_with_timeout(std::process::Command::new("open").args(["-a", "Firefox"]), Duration::from_secs(5));
-        Ok("Firefox didn't accept the request. The address is on your clipboard: in Firefox press ⌘L, then ⌘V and Return.".into())
+        let _ = run_with_timeout(std::process::Command::new("open").args(["-a", &app]), Duration::from_secs(5));
+        Ok(format!("{name} didn't accept the request. The address is on your clipboard: in {name} press ⌘L, then ⌘V and Return."))
     }
 }
 
@@ -636,6 +653,22 @@ mod tests {
     fn network_trouble_reads_plainly() {
         let e = tauri_plugin_updater::Error::Network("timed out".into());
         assert_eq!(update_error(&e), "no connection to GitHub. Tab Guard will try again later.");
+    }
+
+    #[test]
+    fn tray_sizes_each_firefox_when_several_run() {
+        let b = |id, name: &str, total_mb| crate::guard::BrowserSummary {
+            id,
+            name: name.into(),
+            app: String::new(),
+            total_mb,
+            tab_count: 0,
+        };
+        let mut s = snap(9625, 0, 0);
+        s.browsers = vec![b(1, "Firefox", 7270)];
+        assert_eq!(tray_text(&Config::default(), &s).1, "Firefox: 9.4 GB · 20 tab processes");
+        s.browsers.push(b(2, "Firefox Nightly", 2355));
+        assert_eq!(tray_text(&Config::default(), &s).1, "Firefox 7.1 GB · Firefox Nightly 2.3 GB · 20 tab processes");
     }
 
     #[test]

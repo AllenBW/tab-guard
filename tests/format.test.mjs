@@ -1,7 +1,7 @@
 // node --test tests/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gb, mbOrGb, duration, growth, summaryParts, bannerText, settingsToConfig, esc } from "../src/format.js";
+import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, esc } from "../src/format.js";
 
 const config = {
   enabled: true, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
@@ -91,4 +91,21 @@ test("blank or junk fields keep the current value", () => {
 test("escaping", () => {
   assert.equal(esc(`<b>"Tom" & 'Jerry'</b>`), "&lt;b&gt;&quot;Tom&quot; &amp; &#39;Jerry&#39;&lt;/b&gt;");
   assert.equal(esc(42), "42");
+});
+
+test("several Firefoxes are named and sized in the summary", () => {
+  assert.equal(shortName("Firefox"), "Firefox");
+  assert.equal(shortName("Firefox Nightly"), "Nightly");
+  assert.equal(shortName("Firefox Developer Edition (2)"), "Developer Edition (2)");
+  assert.equal(shortName("Firefox (work)"), "Firefox (work)");
+  const browsers = [
+    { name: "Firefox", total_mb: 7270 },
+    { name: "Firefox Nightly", total_mb: 2355 },
+  ];
+  assert.equal(
+    summaryParts({ over: 0, flagged: 1, cooldown_secs: 0, browsers }),
+    "Firefox 7.1 GB · Nightly 2.3 GB · 1 past the warning level",
+  );
+  // One Firefox: no breakdown.
+  assert.equal(summaryParts({ over: 0, flagged: 0, cooldown_secs: 0, browsers: browsers.slice(0, 1) }), "Everything's within your limits");
 });
