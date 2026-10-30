@@ -53,8 +53,19 @@ left alone.
 
 ## Using it
 
-The shield in the menu bar shows your browsers' total memory (⚠︎ when a tab is over a limit). Its
-menu turns Tab Guard on or off, switches modes, and opens the window.
+The shield in the menu bar shows your browsers' total memory (⚠︎ when a tab is over a limit), and
+its color says what Tab Guard is doing:
+
+| Shield | Means |
+|---|---|
+| Plain | Watch only, and nothing needs a look. |
+| Green | Guarding: a closing mode is on and everything's within your limits. |
+| Orange | Worth a look: tabs past the warning level, a tab Watch only would close, or the whole-browser limit paused. |
+| Red | Closing a tab that's over a limit. |
+| Gray | Tab Guard is turned off. |
+
+Its menu repeats the state with a colored dot, turns Tab Guard on or off, switches modes, and opens
+the window.
 
 | Mode | What happens |
 |---|---|
