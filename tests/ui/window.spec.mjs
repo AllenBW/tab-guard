@@ -8,7 +8,7 @@ const sent = (page, cmd) => page.evaluate((c) => window.__calls.filter(([n]) => 
 /** Open the window (`?browsers=2` for Firefox and Nightly side by side) past the welcome card. */
 async function open(page, query = "") {
   await page.goto(`/${query}`);
-  await expect(page.locator("#headline")).toContainText("Firefox is using");
+  await expect(page.locator("#headline")).toContainText("using");
   await page.getByRole("button", { name: "Got it" }).click();
   await expect(page.locator("#welcome")).toBeHidden();
 }
@@ -65,6 +65,24 @@ test("the process list can be filtered to one Firefox", async ({ page }) => {
   await expect(rows(page)).toHaveCount(6);
   await page.getByRole("radio", { name: "All" }).click();
   await expect(rows(page)).toHaveCount(8);
+});
+
+test("Chrome alone: named in the headline, with its Task Manager", async ({ page }) => {
+  await open(page, "?browsers=chrome");
+  await expect(page.locator("#headline")).toHaveText("Google Chrome is using 8.7 GB across 24 tab processes");
+  await expect(page.locator("#proc-filter")).toBeHidden();
+  await page.getByRole("button", { name: "Which site is which? Open its Task Manager" }).click();
+  expect(await sent(page, "open_about_processes")).toEqual([{ browser: 48857 }]);
+  await expect(rows(page).filter({ hasText: "48857" })).toContainText("Google Chrome");
+});
+
+test("Firefox and Chrome together each get their own way to see sites", async ({ page }) => {
+  await open(page, "?browsers=mixed");
+  await expect(page.locator("#headline")).toHaveText("Your browsers are using 8.7 GB across 24 tab processes");
+  await expect(page.locator("#subline")).toContainText("Firefox 7.7 GB · Google Chrome 1.1 GB");
+  await page.getByRole("button", { name: "Show the Task Manager in Google Chrome" }).click();
+  await expect(page.getByRole("button", { name: "Open about:processes in Firefox" })).toBeVisible();
+  expect(await sent(page, "open_about_processes")).toEqual([{ browser: 90001 }]);
 });
 
 test("about:processes opens in the Firefox you pick", async ({ page }) => {

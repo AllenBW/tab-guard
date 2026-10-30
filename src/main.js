@@ -1,6 +1,6 @@
 import {
-  gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc,
-  keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices,
+  mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc,
+  keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices, headline, whichSite,
 } from "./format.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -17,9 +17,9 @@ let view = null;
 let lastJson = "";
 let settingsDirty = false;
 let confirmPid = null;
-/** Which Firefox's processes to show (a browser id), or null for all. */
+/** Which browser's processes to show (a browser id), or null for all. */
 let procFilter = null;
-/** Which Firefox's limits the settings edit (a key), or null for the main ones. */
+/** Which browser's limits the settings edit (a key), or null for the main ones. */
 let limitTarget = null;
 
 let toastTimer;
@@ -94,12 +94,12 @@ function render() {
 
   // Header
   if (!s.checked_at) {
-    $("#headline").textContent = "Checking Firefox…";
-  } else if (!s.firefox_running) {
-    $("#headline").textContent = "Firefox isn't running";
+    $("#headline").textContent = "Checking your browsers…";
+  } else if (!s.browser_running) {
+    $("#headline").textContent = "No browser is running";
     $("#subline").textContent = "Tab Guard will start watching as soon as it opens.";
   } else {
-    $("#headline").textContent = `Firefox is using ${gb(s.total_mb)} across ${s.tab_count} tab processes`;
+    $("#headline").textContent = headline(s);
     $("#subline").textContent = summaryParts(s);
   }
 
@@ -149,7 +149,7 @@ function radios(el, choices, selected, choose) {
 }
 
 let filterKey = null;
-/** All / Firefox / Developer Edition, when more than one Firefox is running. */
+/** All / Firefox / Chrome, when more than one browser is running. */
 function renderProcFilter(browsers) {
   const el = $("#proc-filter");
   procFilter = keptFilter(procFilter, browsers);
@@ -173,7 +173,7 @@ function renderLimitTargets(targets) {
   limitTarget = chosen;
   picker.hidden = !choosing;
   for (const el of document.querySelectorAll(".limit-for")) el.textContent = choosing ? ` · ${shortName(name)}` : "";
-  $("#total-label").textContent = `When all of ${choosing ? name : "Firefox"} passes`;
+  $("#total-label").textContent = choosing ? `When all of ${name} passes` : "When the whole browser passes";
   const key = JSON.stringify([limitTarget, targets]);
   if (!choosing || key === targetsKey) return;
   targetsKey = key;
@@ -193,20 +193,15 @@ function renderLimitTargets(targets) {
 }
 
 let aboutKey = null;
-/** "Which site is which?": one button, or one per Firefox when several run. */
+/** "Which site is which?": one button, or one per browser when several run. */
 function renderAboutProcesses(browsers) {
-  const key = JSON.stringify(browsers.map((b) => [b.id, b.name]));
+  const key = JSON.stringify(browsers.map((b) => [b.id, b.name, b.family]));
   if (key === aboutKey) return;
   aboutKey = key;
-  const el = $("#about-processes");
-  const button = (id, label, aria) =>
-    `<button type="button" class="link" data-browser="${id ?? ""}" aria-label="${esc(aria)}">${esc(label)}</button>`;
-  el.innerHTML =
-    browsers.length > 1
-      ? `Which site is which? Open about:processes in ${browsers
-          .map((b) => button(b.id, shortName(b.name), `Open about:processes in ${b.name}`))
-          .join(" ")}`
-      : button(browsers[0]?.id, "Which site is which? Open about:processes", "Which site is which? Open about:processes");
+  const { intro, buttons } = whichSite(browsers);
+  $("#about-processes").innerHTML = `${esc(intro)} ${buttons
+    .map((b) => `<button type="button" class="link" data-browser="${b.id ?? ""}" aria-label="${esc(b.aria)}">${esc(b.label)}</button>`)
+    .join(" ")}`;
 }
 
 function renderRows(config, s) {
@@ -217,7 +212,7 @@ function renderRows(config, s) {
   const kindBadges = (r) =>
     rowBadges(r, names, several).map((b) => `<span class="kind${b.browser ? " browser" : ""}">${esc(b.text)}</span>`).join("");
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty">${s.checked_at ? "No Firefox processes." : "Checking…"}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">${s.checked_at ? "No browser processes." : "Checking…"}</td></tr>`;
     return;
   }
   const scale = Math.max(limitsFor(config, null).kill_mb, ...rows.map((r) => r.mem_mb));
@@ -257,7 +252,7 @@ function renderRows(config, s) {
         close.className = "danger";
         close.textContent = confirmPid === r.pid ? "Confirm" : "Close";
         close.setAttribute("aria-label", confirmPid === r.pid ? `Confirm closing ${what}` : `Close ${what}`);
-        close.title = "Close this tab process now. Firefox shows its tabs as crashed, with a Restore button.";
+        close.title = "Close this tab process now. The browser shows its tabs as crashed, with a button to reload them.";
         close.onclick = () => {
           if (confirmPid !== r.pid) {
             confirmPid = r.pid;
@@ -268,7 +263,7 @@ function renderRows(config, s) {
           }
           confirmPid = null;
           invoke("close_tab", { pid: r.pid })
-            .then(() => toast(`Closed tab process ${r.pid}. Click Restore on its crashed tab in Firefox to reload it.`))
+            .then(() => toast(`Closed tab process ${r.pid}. Reload it from its crashed tab when you need it.`))
             .catch((e) => toast(String(e), true))
             .finally(refresh);
         };

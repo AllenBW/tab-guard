@@ -95,7 +95,7 @@ export function settingsToConfig(current, form, target = null) {
 
 // ---------------------------------------------------------------- several Firefoxes
 
-const KIND_LABEL = { main: "Firefox", tab: "Tab", gpu: "Graphics", other: "Helper" };
+const KIND_LABEL = { tab: "Tab", gpu: "Graphics", other: "Helper" };
 
 /** The filter to keep: the chosen Firefox's id, or null (All) once it has
  *  quit or only one Firefox is left. */
@@ -109,19 +109,43 @@ export const filterRows = (rows, filter) => (filter == null ? rows : rows.filter
 /** The filter's buttons, as [value, label]: All, then each Firefox. */
 export const filterChoices = (browsers) => [["all", "All"], ...browsers.map((b) => [String(b.id), shortName(b.name)])];
 
-/** The labels after a row's pid: its kind, and which Firefox when several
- *  run. A main process is just named after its Firefox. `names` maps
+/** The labels after a row's pid: its kind, and which browser when several
+ *  run. A main process is just named after its browser. `names` maps
  *  browser id to name. */
 export function rowBadges(r, names, several) {
-  const browser = shortName(names[r.browser] ?? "Firefox");
-  if (!several) return [{ text: KIND_LABEL[r.kind] }];
+  const browser = shortName(names[r.browser] ?? "Browser");
   if (r.kind === "main") return [{ text: browser }];
+  if (!several) return [{ text: KIND_LABEL[r.kind] }];
   return [{ text: KIND_LABEL[r.kind] }, { text: browser, browser: true }];
 }
 
 /** How the Spare and Close buttons name a tab process for screen readers. */
 export function tabLabel(r, names, several) {
-  return `${several ? `${names[r.browser] ?? "Firefox"} ` : ""}tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
+  return `${several ? `${names[r.browser] ?? "Browser"} ` : ""}tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
+}
+
+/** The headline: "Firefox is using…", or "Your browsers are using…". */
+export function headline(s) {
+  const who = s.browsers.length === 1 ? `${s.browsers[0].name} is` : "Your browsers are";
+  return `${who} using ${gb(s.total_mb)} across ${s.tab_count} tab processes`;
+}
+
+/** "Which site is which?": where each browser shows the site in each
+ *  process. Firefox-family browsers have about:processes; Chrome-family
+ *  ones have a Task Manager. Returns the text before the buttons, and the
+ *  buttons (one with no text before it when only one browser runs). */
+export function whichSite(browsers) {
+  const place = (b) => (b.family === "chromium" ? "its Task Manager" : "about:processes");
+  const aria = (b) => (b.family === "chromium" ? `Show the Task Manager in ${b.name}` : `Open about:processes in ${b.name}`);
+  if (browsers.length < 2) {
+    const b = browsers[0];
+    const label = `Which site is which? Open ${b ? place(b) : "about:processes"}`;
+    return { intro: "", buttons: [{ id: b?.id ?? null, label, aria: label }] };
+  }
+  return {
+    intro: "Which site is which? Open",
+    buttons: browsers.map((b) => ({ id: b.id, label: shortName(b.name), aria: aria(b) })),
+  };
 }
 
 /** Whether the "Limits for" picker shows, and which copy of Firefox it

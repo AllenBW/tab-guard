@@ -1,6 +1,6 @@
 # Privacy
 
-Tab Guard runs entirely on your Mac. It reads the memory and CPU use of Firefox's processes
+Tab Guard runs entirely on your Mac. It reads the memory and CPU use of your browsers' processes
 from macOS, and keeps its settings and activity log in your home folder. It doesn't read your
 browsing: it never sees which website runs in which process.
 
@@ -35,10 +35,12 @@ The code that sends these is in [`src-tauri/src/usage.rs`](src-tauri/src/usage.r
 
 With **Install updates automatically** on (the default), Tab Guard checks GitHub for a new
 release a minute after it starts and every 6 hours. That request is an ordinary download from
-github.com and includes no information about you or your Firefox. Each update is
+github.com and includes no information about you or your browsers. Each update is
 signature-checked before it's installed.
 
 ## Controlling Firefox
 
-macOS asks once whether Tab Guard may control Firefox. That permission is only used by the
-**Which site is which?** button, to ask Firefox to open its `about:processes` page.
+macOS asks once whether Tab Guard may control Firefox (or another Firefox-based browser). That
+permission is only used by the **Which site is which?** button, to ask the browser to open its
+`about:processes` page. For Chrome-family browsers that button only brings the browser forward,
+which needs no permission.
