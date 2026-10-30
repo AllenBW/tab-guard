@@ -26,7 +26,9 @@ button that reloads it.
 - **Chrome** and browsers built on Chromium: Google Chrome (including Beta, Dev and Canary),
   Microsoft Edge, Brave, Arc, Vivaldi, Opera and Chromium.
 
-Several can run at once; each gets its own limits. Safari isn't supported: its page processes are
+Several can run at once; each gets its own limits. Chrome-family browsers start a spare process
+ahead of your next tab, so their tab-process count can be one or two higher than the tabs you
+have open; those spares are small and never reach a limit. Safari isn't supported: its page processes are
 shared with Mail and other apps, so Tab Guard can't tell which are Safari's tabs. Apps built on
 the same engines that aren't browsers (Thunderbird, or Electron apps like Slack and VS Code) are
 left alone.

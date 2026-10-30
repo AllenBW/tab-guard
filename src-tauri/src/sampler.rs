@@ -702,6 +702,9 @@ mod tests {
         for b in &browsers {
             let n = procs.iter().filter(|p| p.browser == b.id).count();
             println!("{} ({}): {n} processes, {}", b.name, b.id, b.app);
+            for p in procs.iter().filter(|p| p.browser == b.id && p.kind != Kind::Other) {
+                println!("    {:>6} {:?} {} MB", p.pid, p.kind, p.mem_mb);
+            }
         }
         for p in procs.iter().take(8) {
             println!("{:>6} {:?} {} MB cpu {:.1}% age {}s", p.pid, p.kind, p.mem_mb, p.cpu, p.age_secs);
