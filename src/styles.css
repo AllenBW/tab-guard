@@ -13,6 +13,8 @@
   --spared: #5b5bd6;
   --spared-soft: #e6e7fb;
   --bar: #d7dbdf;
+  --badge: #eceef0;
+  --accent-text: #ffffff;
   color-scheme: light dark;
 }
 
@@ -32,7 +34,19 @@
     --spared: #9b9ef0;
     --spared-soft: #25264a;
     --bar: #33383d;
+    --badge: #2a2e32;
+    --accent-text: #0b1f1d;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
 * { box-sizing: border-box; }
@@ -103,7 +117,7 @@ button.danger { color: var(--over); }
 }
 .toast.error { border-color: var(--over); color: var(--over); }
 button:disabled { opacity: 0.5; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 5px 16px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; padding: 5px 16px; }
 
 .welcome {
   margin-top: 14px; padding: 14px 16px; border-radius: 8px;
@@ -115,6 +129,16 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .welcome label.check { display: flex; gap: 8px; align-items: flex-start; }
 .welcome label.check input { margin-top: 3px; }
 [hidden] { display: none !important; }
+
+.about { display: flex; gap: 20px; align-items: flex-start; padding: 12px 4px; }
+.about img { flex: none; }
+.about h2 { font-size: 20px; margin: 0; }
+.about-body { display: flex; flex-direction: column; gap: 8px; max-width: 62ch; }
+.about-body p { margin: 0; }
+.about-update { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.about-links { display: flex; flex-wrap: wrap; gap: 2px 6px; margin-left: -6px !important; }
+.credit { margin-top: 18px !important; }
+button.link.inline { padding: 0; font-size: inherit; }
 
 .tabs { display: flex; gap: 4px; margin-top: 18px; border-bottom: 1px solid var(--border); }
 .tabs button {
@@ -140,8 +164,10 @@ tr:last-child td { border-bottom: none; }
 
 .kind {
   display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: var(--bar); color: var(--muted); margin-left: 6px;
+  background: var(--badge); color: var(--text); margin-left: 6px;
 }
+.proc { white-space: nowrap; }
+.status-col { min-width: 150px; }
 .pid { font-variant-numeric: tabular-nums; }
 
 .mem { display: flex; align-items: center; gap: 8px; }
@@ -154,6 +180,7 @@ tr.over .fill { background: var(--over); }
 .status { display: flex; flex-direction: column; gap: 1px; }
 .pill {
   align-self: flex-start; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px;
+  white-space: nowrap;
 }
 tr.warn .pill { background: var(--warn-soft); color: var(--warn); }
 tr.over .pill { background: var(--over-soft); color: var(--over); }
@@ -163,6 +190,13 @@ tr.spared .pill { background: var(--spared-soft); color: var(--spared); }
 .actions button { padding: 2px 8px; font-size: 12px; }
 .grow-up { color: var(--warn); }
 .empty { text-align: center; color: var(--muted); padding: 28px; }
+
+/* Near the window's minimum width, drop the memory bars so the reasons have room. */
+@media (max-width: 880px) {
+  .mem .bar, .age-col { display: none; }
+  .mem-col { width: auto; }
+  th, td { padding: 7px 8px; }
+}
 
 .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
 fieldset {

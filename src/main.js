@@ -23,9 +23,17 @@ function toast(text, isError = false) {
   const el = $("#toast");
   el.textContent = text;
   el.className = isError ? "toast error" : "toast";
+  el.setAttribute("role", isError ? "alert" : "status");
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.hidden = true), 9000);
+}
+
+/** Say something to screen readers without showing it. */
+function announce(text) {
+  const el = $("#sr-status");
+  el.textContent = "";
+  setTimeout(() => (el.textContent = text), 50);
 }
 
 function timeOf(unix) {
@@ -64,7 +72,9 @@ function render() {
   $("#enabled").checked = config.enabled;
   $("#enabled-label").textContent = config.enabled ? "On" : "Paused";
   for (const b of document.querySelectorAll(".segmented button")) {
-    b.setAttribute("aria-checked", String(b.dataset.mode === config.mode));
+    const on = b.dataset.mode === config.mode;
+    b.setAttribute("aria-checked", String(on));
+    b.tabIndex = on ? 0 : -1;
   }
   $("#mode-help").textContent = MODE_HELP[config.mode];
 
@@ -93,6 +103,8 @@ function renderRows(config, s) {
     return;
   }
   const scale = Math.max(config.kill_mb, ...s.rows.map((r) => r.mem_mb));
+  // The table is redrawn every few seconds; put keyboard focus back where it was.
+  const focused = document.activeElement?.closest?.("#rows") ? document.activeElement.dataset : null;
   tbody.replaceChildren(
     ...s.rows.map((r) => {
       const tr = document.createElement("tr");
@@ -100,28 +112,38 @@ function renderRows(config, s) {
       const pill = { warn: "Warning", over: r.action || "Over limit", spared: "Spared" }[r.status];
       const isTab = r.kind === "tab";
       tr.innerHTML = `
-        <td><span class="pid">${r.pid}</span><span class="kind">${KIND_LABEL[r.kind]}</span></td>
-        <td><div class="mem"><div class="bar"><div class="fill" style="width:${(100 * r.mem_mb) / scale}%"></div></div>
+        <td class="proc"><span class="pid">${r.pid}</span><span class="kind">${KIND_LABEL[r.kind]}</span></td>
+        <td><div class="mem"><div class="bar" aria-hidden="true"><div class="fill" style="width:${(100 * r.mem_mb) / scale}%"></div></div>
             <span class="val">${mbOrGb(r.mem_mb)}</span></div></td>
         <td class="num ${r.growth_mb_per_min > 5 ? "grow-up" : ""}">${growth(r.growth_mb_per_min)}</td>
         <td class="num">${r.cpu.toFixed(1)}%</td>
-        <td class="num">${duration(r.age_secs)}</td>
+        <td class="num age-col">${duration(r.age_secs)}</td>
         <td><div class="status">${pill ? `<span class="pill">${esc(pill)}</span>` : ""}
             ${r.reason ? `<span class="reason">${esc(r.reason)}</span>` : ""}</div></td>
         <td class="actions"></td>`;
       if (isTab) {
         const actions = tr.querySelector(".actions");
+        const what = `tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
         const spare = document.createElement("button");
+        spare.type = "button";
+        spare.dataset.pid = r.pid;
+        spare.dataset.action = "spare";
         spare.textContent = r.status === "spared" ? "Unspare" : "Spare";
+        spare.setAttribute("aria-label", `${spare.textContent} ${what}`);
         spare.title = "Never close this tab process while it's running";
         spare.onclick = () => invoke("set_spared", { pid: r.pid, spared: r.status !== "spared" }).then(refresh);
         const close = document.createElement("button");
+        close.type = "button";
+        close.dataset.pid = r.pid;
+        close.dataset.action = "close";
         close.className = "danger";
         close.textContent = confirmPid === r.pid ? "Confirm" : "Close";
+        close.setAttribute("aria-label", confirmPid === r.pid ? `Confirm closing ${what}` : `Close ${what}`);
         close.title = "Close this tab process now. Firefox shows its tabs as crashed, with a Restore button.";
         close.onclick = () => {
           if (confirmPid !== r.pid) {
             confirmPid = r.pid;
+            announce(`Press again within 4 seconds to close ${what}.`);
             setTimeout(() => { if (confirmPid === r.pid) { confirmPid = null; render(); } }, 4000);
             render();
             return;
@@ -137,6 +159,7 @@ function renderRows(config, s) {
       return tr;
     }),
   );
+  if (focused?.pid) tbody.querySelector(`[data-pid="${focused.pid}"][data-action="${focused.action}"]`)?.focus();
 }
 
 function renderEvents(events) {
@@ -224,13 +247,40 @@ for (const b of document.querySelectorAll(".segmented button")) {
   b.addEventListener("click", () => saveConfig({ ...view.config, mode: b.dataset.mode }));
 }
 
-for (const t of document.querySelectorAll(".tabs button")) {
-  t.addEventListener("click", () => {
-    for (const other of document.querySelectorAll(".tabs button")) {
-      other.setAttribute("aria-selected", String(other === t));
-      $(`#${other.dataset.panel}`).hidden = other !== t;
-    }
+/** Arrow keys, Home and End move between the items of a tab list or radio group. */
+function arrowKeys(container, items, choose) {
+  container.addEventListener("keydown", (e) => {
+    const list = [...container.querySelectorAll(items)];
+    const i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    const next = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: list.length - 1 }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    const target = list[(next + list.length) % list.length];
+    target.focus();
+    choose(target);
   });
+}
+arrowKeys($(".segmented"), "button", (b) => b.click());
+arrowKeys($(".tabs"), "button", (t) => showPanel(t.dataset.panel));
+
+/** Switch tabs. Also called by the app when the menu bar's About item is used. */
+function showPanel(name) {
+  for (const t of document.querySelectorAll(".tabs button")) {
+    t.setAttribute("aria-selected", String(t.dataset.panel === name));
+    t.tabIndex = t.dataset.panel === name ? 0 : -1;
+    $(`#${t.dataset.panel}`).hidden = t.dataset.panel !== name;
+  }
+}
+window.showPanel = showPanel;
+
+for (const t of document.querySelectorAll(".tabs button")) {
+  t.addEventListener("click", () => showPanel(t.dataset.panel));
+}
+showPanel(location.hash.length > 1 && $(location.hash)?.classList.contains("panel") ? location.hash.slice(1) : "processes");
+
+for (const a of document.querySelectorAll("[data-link]")) {
+  a.addEventListener("click", () => invoke("open_link", { name: a.dataset.link }).catch((e) => toast(String(e), true)));
 }
 
 $("#welcome-done").addEventListener("click", () =>

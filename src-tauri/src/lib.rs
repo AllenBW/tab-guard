@@ -122,11 +122,12 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
         modes.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     let mode_menu = Submenu::with_items(app, "Mode", true, &mode_refs)?;
     let open = MenuItem::with_id(app, "open", "Open Tab Guard…", true, None::<&str>)?;
+    let about = MenuItem::with_id(app, "about", "About Tab Guard", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Tab Guard", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
         app,
-        &[&summary, &detail, &sep()?, &enabled, &mode_menu, &sep()?, &open, &sep()?, &quit],
+        &[&summary, &detail, &sep()?, &enabled, &mode_menu, &sep()?, &open, &about, &sep()?, &quit],
     )?;
 
     let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -140,7 +141,8 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
             let shared = app.state::<Arc<Shared>>();
             let id = event.id.as_ref();
             match id {
-                "open" => show_window(app),
+                "open" => show_window(app, None),
+                "about" => show_window(app, Some("about")),
                 "quit" => app.exit(0),
                 "enabled" => update_config(app, &shared, |c| c.enabled = !c.enabled),
                 _ => {
@@ -157,16 +159,21 @@ fn build_tray(app: &AppHandle, cfg: &Config) -> tauri::Result<TrayItems> {
     Ok(TrayItems { tray, summary, detail, enabled, modes })
 }
 
-/// Open the window, creating it if needed. It's destroyed again when closed,
-/// so its web view isn't holding memory while Tab Guard sits in the menu bar.
-fn show_window(app: &AppHandle) {
+/// Open the window, creating it if needed, optionally on one of its tabs
+/// ("about"). It's destroyed again when closed, so its web view isn't holding
+/// memory while Tab Guard sits in the menu bar.
+fn show_window(app: &AppHandle, panel: Option<&'static str>) {
     let shared = app.state::<Arc<Shared>>();
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        if let Some(p) = panel {
+            let _ = w.eval(format!("window.showPanel && showPanel('{p}')"));
+        }
     } else {
-        let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        let page = panel.map_or("index.html".to_string(), |p| format!("index.html#{p}"));
+        let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(page.into()))
             .title("Tab Guard")
             .inner_size(980.0, 680.0)
             .min_inner_size(720.0, 480.0)
@@ -325,6 +332,26 @@ fn run_with_timeout(cmd: &mut std::process::Command, limit: Duration) -> bool {
 /// this (it doesn't know the about: scheme), so ask Firefox directly over
 /// Apple Events, and put the address on the clipboard as a fallback. Async so
 /// the wait runs off the main thread.
+/// The only pages the window can open, in the default browser.
+const LINKS: [(&str, &str); 6] = [
+    ("project", "https://allenbw.github.io/tab-guard/"),
+    ("source", "https://github.com/AllenBW/tab-guard"),
+    ("changelog", "https://github.com/AllenBW/tab-guard/blob/main/CHANGELOG.md"),
+    ("privacy", "https://github.com/AllenBW/tab-guard/blob/main/PRIVACY.md"),
+    ("issues", "https://github.com/AllenBW/tab-guard/issues"),
+    ("walk", "https://allenmanzanowight.com/walk?ref=tab-guard"),
+];
+
+fn link_url(name: &str) -> Option<&'static str> {
+    LINKS.iter().find(|(n, _)| *n == name).map(|(_, url)| *url)
+}
+
+#[tauri::command]
+fn open_link(name: String) -> Result<(), String> {
+    let url = link_url(&name).ok_or("Unknown link")?;
+    std::process::Command::new("open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn open_about_processes() -> Result<String, String> {
     let mut pbcopy = std::process::Command::new("pbcopy");
@@ -444,6 +471,7 @@ pub fn run() {
             get_autostart,
             set_autostart,
             open_about_processes,
+            open_link,
             check_for_updates
         ])
         .setup(|app| {
@@ -476,7 +504,7 @@ pub fn run() {
             // The welcome card asks about usage sharing, so show it until
             // it's been answered, including on installs from before it existed.
             if first_run || !config.welcomed {
-                show_window(app.handle());
+                show_window(app.handle(), None);
             }
             if config.share_usage {
                 usage::send(vec![usage::started(config.mode)]);
@@ -540,6 +568,13 @@ mod tests {
         assert_eq!(tray_text(&close, &held).2, "Whole-browser limit paused until 08:31");
         // A tab over its own limit still comes first.
         assert_eq!(tray_text(&close, &Snapshot { over: 1, ..held }).2, "1 over a limit, closing");
+    }
+
+    #[test]
+    fn only_listed_links_open() {
+        assert_eq!(link_url("walk"), Some("https://allenmanzanowight.com/walk?ref=tab-guard"));
+        assert_eq!(link_url("https://evil.example"), None);
+        assert!(LINKS.iter().all(|(_, url)| url.starts_with("https://")));
     }
 
     #[test]
