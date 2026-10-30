@@ -93,6 +93,52 @@ export function settingsToConfig(current, form, target = null) {
   };
 }
 
+// ---------------------------------------------------------------- several Firefoxes
+
+const KIND_LABEL = { main: "Firefox", tab: "Tab", gpu: "Graphics", other: "Helper" };
+
+/** The filter to keep: the chosen Firefox's id, or null (All) once it has
+ *  quit or only one Firefox is left. */
+export function keptFilter(filter, browsers) {
+  return browsers.length > 1 && browsers.some((b) => b.id === filter) ? filter : null;
+}
+
+/** The rows the process table shows for a filter (a browser id, or null for all). */
+export const filterRows = (rows, filter) => (filter == null ? rows : rows.filter((r) => r.browser === filter));
+
+/** The filter's buttons, as [value, label]: All, then each Firefox. */
+export const filterChoices = (browsers) => [["all", "All"], ...browsers.map((b) => [String(b.id), shortName(b.name)])];
+
+/** The labels after a row's pid: its kind, and which Firefox when several
+ *  run. A main process is just named after its Firefox. `names` maps
+ *  browser id to name. */
+export function rowBadges(r, names, several) {
+  const browser = shortName(names[r.browser] ?? "Firefox");
+  if (!several) return [{ text: KIND_LABEL[r.kind] }];
+  if (r.kind === "main") return [{ text: browser }];
+  return [{ text: KIND_LABEL[r.kind] }, { text: browser, browser: true }];
+}
+
+/** How the Spare and Close buttons name a tab process for screen readers. */
+export function tabLabel(r, names, several) {
+  return `${several ? `${names[r.browser] ?? "Firefox"} ` : ""}tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
+}
+
+/** Whether the "Limits for" picker shows, and which copy of Firefox it
+ *  edits: it shows once there's a choice to make, or a copy has its own
+ *  limits, and keeps the current choice while that copy is listed. With no
+ *  picker, the main limits (null) are edited. */
+export function limitChoice(targets, current) {
+  const choosing = targets.length > 1 || targets.some((t) => t.own);
+  if (!choosing) return { choosing, key: null, name: null };
+  const t = targets.find((t) => t.key === current) ?? targets[0];
+  return { choosing, key: t.key, name: t.name };
+}
+
+/** The picker's buttons, as [key, label, class]. */
+export const limitChoices = (targets) =>
+  targets.map((t) => [t.key, t.running ? shortName(t.name) : `${shortName(t.name)} (not running)`, t.running ? "" : "not-running"]);
+
 /** Escape text for innerHTML. */
 export const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);

@@ -1,4 +1,7 @@
-import { gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc } from "./format.js";
+import {
+  gb, mbOrGb, duration, growth, summaryParts, shortName, bannerText, settingsToConfig, limitsFor, esc,
+  keptFilter, filterRows, filterChoices, rowBadges, tabLabel, limitChoice, limitChoices,
+} from "./format.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -9,7 +12,6 @@ const MODE_HELP = {
   "warn-then-close": "Tabs past the warning level are flagged; tabs over a hard limit are closed, one at a time.",
   close: "Tabs over a hard limit are closed, one at a time. No early warnings.",
 };
-const KIND_LABEL = { main: "Firefox", tab: "Tab", gpu: "Graphics", other: "Helper" };
 
 let view = null;
 let lastJson = "";
@@ -150,13 +152,12 @@ let filterKey = null;
 /** All / Firefox / Developer Edition, when more than one Firefox is running. */
 function renderProcFilter(browsers) {
   const el = $("#proc-filter");
-  if (procFilter != null && !browsers.some((b) => b.id === procFilter)) procFilter = null;
+  procFilter = keptFilter(procFilter, browsers);
   el.hidden = browsers.length < 2;
   const key = JSON.stringify([procFilter, browsers.map((b) => [b.id, b.name])]);
   if (el.hidden || key === filterKey) return;
   filterKey = key;
-  const choices = [["all", "All"], ...browsers.map((b) => [String(b.id), shortName(b.name)])];
-  radios(el, choices, procFilter == null ? "all" : String(procFilter), (v) => {
+  radios(el, filterChoices(browsers), procFilter == null ? "all" : String(procFilter), (v) => {
     procFilter = v === "all" ? null : Number(v);
     filterKey = null;
     render();
@@ -168,18 +169,15 @@ let targetsKey = null;
 /** "Limits for": shown once there's a choice to make, or a copy has its own limits. */
 function renderLimitTargets(targets) {
   const picker = $("#limit-picker");
-  const choosing = targets.length > 1 || targets.some((t) => t.own);
-  if (!choosing) limitTarget = null;
-  else if (!targets.some((t) => t.key === limitTarget)) limitTarget = targets[0].key;
+  const { choosing, key: chosen, name } = limitChoice(targets, limitTarget);
+  limitTarget = chosen;
   picker.hidden = !choosing;
-  const name = targets.find((t) => t.key === limitTarget)?.name;
   for (const el of document.querySelectorAll(".limit-for")) el.textContent = choosing ? ` · ${shortName(name)}` : "";
   $("#total-label").textContent = `When all of ${choosing ? name : "Firefox"} passes`;
   const key = JSON.stringify([limitTarget, targets]);
   if (!choosing || key === targetsKey) return;
   targetsKey = key;
-  const choices = targets.map((t) => [t.key, t.running ? shortName(t.name) : `${shortName(t.name)} (not running)`, t.running ? "" : "not-running"]);
-  radios($("#limit-targets"), choices, limitTarget, async (key) => {
+  radios($("#limit-targets"), limitChoices(targets), limitTarget, async (key) => {
     if (key === limitTarget) return;
     // Save what was typed for the copy being left before switching.
     if (settingsDirty) {
@@ -214,16 +212,10 @@ function renderAboutProcesses(browsers) {
 function renderRows(config, s) {
   const tbody = $("#rows");
   const several = s.browsers.length > 1;
-  const rows = procFilter == null ? s.rows : s.rows.filter((r) => r.browser === procFilter);
+  const rows = filterRows(s.rows, procFilter);
   const names = Object.fromEntries(s.browsers.map((b) => [b.id, b.name]));
-  // With several Firefoxes, each row also says which one; a main process
-  // is just named after its Firefox.
-  const kindBadges = (r) => {
-    const browser = shortName(names[r.browser] ?? "Firefox");
-    if (!several) return `<span class="kind">${KIND_LABEL[r.kind]}</span>`;
-    if (r.kind === "main") return `<span class="kind">${esc(browser)}</span>`;
-    return `<span class="kind">${KIND_LABEL[r.kind]}</span><span class="kind browser">${esc(browser)}</span>`;
-  };
+  const kindBadges = (r) =>
+    rowBadges(r, names, several).map((b) => `<span class="kind${b.browser ? " browser" : ""}">${esc(b.text)}</span>`).join("");
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty">${s.checked_at ? "No Firefox processes." : "Checking…"}</td></tr>`;
     return;
@@ -249,7 +241,7 @@ function renderRows(config, s) {
         <td class="actions"></td>`;
       if (isTab) {
         const actions = tr.querySelector(".actions");
-        const what = `${several ? `${names[r.browser] ?? "Firefox"} ` : ""}tab process ${r.pid} (${mbOrGb(r.mem_mb)})`;
+        const what = tabLabel(r, names, several);
         const spare = document.createElement("button");
         spare.type = "button";
         spare.dataset.pid = r.pid;

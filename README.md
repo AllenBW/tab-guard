@@ -65,7 +65,8 @@ usage counts.
 
 ## Development
 
-- `pnpm test` runs the UI helper tests (node) and the Rust tests.
+- `pnpm test` runs the UI helper tests (node) and the Rust tests. `pnpm test:ui` drives the window
+  in WebKit against the fake backend below (run `pnpm exec playwright install webkit` once first).
 - `cd src-tauri && cargo test live_sample -- --ignored --nocapture` samples the Firefox that's running
   now; `cargo test --release bench_sample -- --ignored --nocapture` times a check.
 - `node scripts/preview-server.mjs` serves the window's UI at http://localhost:5174 with a

@@ -20,3 +20,11 @@ jobs:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      # The window in WebKit, against the fake backend (tests/ui).
+      - run: pnpm exec playwright install webkit
+      - run: pnpm test:ui
+      - uses: actions/upload-artifact@v5
+        if: failure()
+        with:
+          name: ui-test-results
+          path: test-results/
