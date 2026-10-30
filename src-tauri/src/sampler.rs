@@ -340,8 +340,8 @@ fn identify(pid: u32, main_exe: &mut HashMap<String, String>) -> Known {
     let Some(path) = pid_path(pid) else { return Known::NotBrowser };
     let Some((family, app)) = browser_app(&path) else { return Known::NotBrowser };
     let exe = main_exe.entry(app.to_string()).or_insert_with(|| main_executable(app, family));
-    let is_main = path == format!("{app}/Contents/MacOS/{exe}");
     let args = proc_args(pid).unwrap_or_default();
+    let is_main = is_main_process(family, app, exe, &path, &args);
     let start = rusage(pid).map(|r| r.ri_proc_start_abstime).unwrap_or(0);
     let kind = classify(family, &path, &args, is_main);
     // Chromium browsers run every profile in one process; Firefox runs one per profile.
@@ -381,6 +381,19 @@ fn main_executable(app: &str, family: Family) -> String {
     }
 }
 
+/// Whether a process is its browser's main one: the app's own executable
+/// (`exe`, from its Info.plist), or, in a Chromium browser, the one process
+/// in Contents/MacOS without a `--type` (every helper has one), in case the
+/// Info.plist couldn't be read or names something else.
+pub fn is_main_process(family: Family, app: &str, exe: &str, path: &str, args: &[String]) -> bool {
+    if path == format!("{app}/Contents/MacOS/{exe}") {
+        return true;
+    }
+    family == Family::Chromium
+        && path.strip_prefix(&format!("{app}/Contents/MacOS/")).is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+        && !args.iter().any(|a| a.starts_with("--type="))
+}
+
 /// The profile a copy of Firefox was started with (`-P work`, or
 /// `-profile /path/to/work`), if it was given one.
 pub fn profile_name(args: &[String]) -> Option<String> {
@@ -393,33 +406,54 @@ pub fn profile_name(args: &[String]) -> Option<String> {
 /// Tie each process to the browser it belongs to, and name the browsers.
 /// A process belongs to the browser that started it; one that was handed to
 /// launchd (Firefox's crash helper does this) belongs to the oldest browser
-/// from the same app. Returns pid -> browser id, and the browsers, oldest
-/// first.
+/// from the same app. An app with no main process in sight (it couldn't be
+/// read, or has just quit and its helpers haven't yet) is still one browser,
+/// not one per helper: its id is the oldest helper's parent, which is the
+/// browser process itself while that's alive, so its limits carry on.
+/// Returns pid -> browser id, and the browsers, oldest first.
 pub fn group(members: &[Member]) -> (HashMap<u32, u32>, Vec<Browser>) {
     let mut mains: Vec<&Member> = members.iter().filter(|m| m.kind == Kind::Main).collect();
     mains.sort_by_key(|m| (m.start, m.pid));
     let mut of = HashMap::new();
-    let mut orphans = Vec::new();
+    let mut unowned: Vec<&Member> = Vec::new();
     for m in members {
         let owner = if m.kind == Kind::Main {
             Some(m.pid)
         } else {
             mains.iter().find(|b| b.pid == m.parent).or_else(|| mains.iter().find(|b| b.app == m.app)).map(|b| b.pid)
         };
-        // The browser itself is gone but this process isn't yet: it stands alone.
-        let owner = owner.unwrap_or_else(|| {
-            orphans.push(m);
-            m.pid
-        });
-        of.insert(m.pid, owner);
+        match owner {
+            Some(owner) => {
+                of.insert(m.pid, owner);
+            }
+            None => unowned.push(m),
+        }
+    }
+
+    // One head per app without a main, with the id explained above (or the
+    // oldest helper's own pid when its parent is launchd or already taken).
+    unowned.sort_by_key(|m| (m.start, m.pid));
+    let mut heads: Vec<(&Member, u32)> = Vec::new();
+    for m in &unowned {
+        let id = match heads.iter().find(|(h, _)| h.app == m.app) {
+            Some(&(_, id)) => id,
+            None => {
+                let taken = |id: u32| mains.iter().any(|b| b.pid == id) || heads.iter().any(|&(_, h)| h == id);
+                let id = if m.parent > 1 && !taken(m.parent) { m.parent } else { m.pid };
+                heads.push((m, id));
+                id
+            }
+        };
+        of.insert(m.pid, id);
     }
 
     let mut browsers: Vec<Browser> = mains
         .iter()
-        .chain(orphans.iter())
-        .map(|m| {
+        .map(|m| (*m, m.pid))
+        .chain(heads.iter().copied())
+        .map(|(m, id)| {
             let key = browser_key(m.app, m.profile);
-            Browser { id: m.pid, name: key_name(&key), family: m.family, app: m.app.to_string(), key }
+            Browser { id, name: key_name(&key), family: m.family, app: m.app.to_string(), key }
         })
         .collect();
     // Two copies with the same name: number the later ones.
@@ -481,6 +515,14 @@ pub fn growth_mb_per_min(hist: &VecDeque<(Instant, u64)>) -> f64 {
     }
 }
 
+/// The exec path at the front of a KERN_PROCARGS2 buffer, after argc.
+pub fn parse_exec_path(buf: &[u8]) -> Option<String> {
+    let rest = buf.get(4..)?;
+    let end = rest.iter().position(|&b| b == 0)?;
+    let path = std::str::from_utf8(&rest[..end]).ok()?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
 /// Parse a KERN_PROCARGS2 buffer: argc, the exec path, NUL padding, then
 /// argc NUL-terminated arguments (environment follows; ignored).
 pub fn parse_procargs(buf: &[u8]) -> Option<Vec<String>> {
@@ -531,10 +573,17 @@ fn list_pids(buf: &mut Vec<libc::pid_t>) {
     buf.truncate(n.max(0) as usize);
 }
 
+/// The path of a pid's executable. The kernel can't name one whose file
+/// was deleted (an installer that drops a new copy in under a running
+/// browser does that), so then it's the path the process was started by,
+/// which its arguments keep.
 fn pid_path(pid: u32) -> Option<String> {
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
-    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    if n > 0 {
+        return Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+    }
+    procargs(pid).and_then(|b| parse_exec_path(&b))
 }
 
 fn parent_pid(pid: u32) -> u32 {
@@ -547,6 +596,11 @@ fn parent_pid(pid: u32) -> u32 {
 }
 
 fn proc_args(pid: u32) -> Option<Vec<String>> {
+    parse_procargs(&procargs(pid)?)
+}
+
+/// A pid's KERN_PROCARGS2 buffer: argc, the exec path, then the arguments.
+fn procargs(pid: u32) -> Option<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
     let rc = unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) };
@@ -561,7 +615,7 @@ fn proc_args(pid: u32) -> Option<Vec<String>> {
         return None;
     }
     buf.truncate(size);
-    parse_procargs(&buf)
+    Some(buf)
 }
 
 /// Unlike resident size, the physical footprint doesn't count memory shared
@@ -685,6 +739,52 @@ mod tests {
         assert_eq!(browsers.len(), 1);
     }
 
+    #[test]
+    fn helpers_of_a_browser_that_cant_be_seen_are_one_browser() {
+        let (fx, chrome) = ("/Applications/Firefox.app", "/Applications/Google Chrome.app");
+        // Chrome's browser process (30) isn't among the members; its helpers are.
+        let members = [
+            member(10, Kind::Main, 1, fx),
+            member(11, Kind::Tab, 10, fx),
+            member(33, Kind::Other, 1, chrome), // crashpad, handed to launchd
+            member(31, Kind::Tab, 30, chrome),
+            member(32, Kind::Gpu, 30, chrome),
+            member(34, Kind::Tab, 30, chrome),
+        ];
+        let (of, browsers) = group(&members);
+        assert_eq!([of[&31], of[&32], of[&33], of[&34]], [30, 30, 30, 30], "one group, headed by their parent");
+        let names: Vec<&str> = browsers.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Firefox", "Google Chrome"], "named after the app, not numbered");
+        assert_eq!(browsers[1].id, 30);
+        assert_eq!(browsers[1].key, chrome);
+        assert_eq!(browsers[1].family, Family::Chromium);
+        // Only the crash handler left, whose parent is launchd: its own pid heads the group.
+        let (of, browsers) = group(&[member(33, Kind::Other, 1, chrome)]);
+        assert_eq!((of[&33], browsers[0].id), (33, 33));
+        // Two helpers of two apps that share a parent can't share an id.
+        let members = [member(31, Kind::Tab, 30, chrome), member(41, Kind::Tab, 30, fx)];
+        let (of, _) = group(&members);
+        assert_ne!(of[&31], of[&41]);
+    }
+
+    #[test]
+    fn finds_the_main_process_without_its_info_plist() {
+        let chrome = "/Applications/Google Chrome.app";
+        let main = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let is = |exe: &str, path: &str, a: &[&str]| is_main_process(Family::Chromium, chrome, exe, path, &args(a));
+        assert!(is("Google Chrome", main, &[main]));
+        // The Info.plist couldn't be read, or names something else: the one
+        // process in Contents/MacOS without a --type is the browser.
+        assert!(is("Something Else", main, &[main, "--no-first-run"]));
+        assert!(!is("Something Else", CHROME_RENDERER, &["helper", "--type=renderer"]));
+        assert!(!is("Something Else", "/Applications/Google Chrome.app/Contents/MacOS/Tools/x", &["x"]));
+        assert!(!is("Something Else", "/Applications/Google Chrome.app/Contents/MacOS/", &["x"]));
+        // Firefox's Contents/MacOS holds helpers too, so only its named executable counts.
+        let fx = "/Applications/Firefox.app";
+        assert!(is_main_process(Family::Gecko, fx, "firefox", &format!("{fx}/Contents/MacOS/firefox"), &[]));
+        assert!(!is_main_process(Family::Gecko, fx, "firefox", &format!("{fx}/Contents/MacOS/crashhelper"), &[]));
+    }
+
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
     }
@@ -790,6 +890,11 @@ mod tests {
         assert_eq!(parse_procargs(&buf), None);
         assert_eq!(parse_procargs(&[1, 0]), None);
         assert_eq!(parse_procargs(&(-1i32).to_ne_bytes()), None);
+        // The exec path comes first, whether or not the file still exists.
+        let buf = procargs(3, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", 3, &["Google Chrome", "-a", "b"], &[]);
+        assert_eq!(parse_exec_path(&buf).as_deref(), Some("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
+        assert_eq!(parse_exec_path(&procargs(1, "", 1, &["a"], &[])), None);
+        assert_eq!(parse_exec_path(&[1, 0]), None);
     }
 
     #[test]
@@ -817,6 +922,8 @@ mod tests {
         assert_eq!(parent_pid(me), unsafe { libc::getppid() } as u32);
         let args = proc_args(me).expect("own args");
         assert!(!args.is_empty());
+        let exec = parse_exec_path(&super::procargs(me).expect("own procargs")).expect("own exec path");
+        assert!(exec.ends_with(path.rsplit('/').next().unwrap()), "{exec} vs {path}");
         let mut buf = Vec::new();
         list_pids(&mut buf);
         assert!(buf.contains(&(me as libc::pid_t)));
