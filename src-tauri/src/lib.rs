@@ -38,10 +38,12 @@ impl Shared {
 /// Ask a tab process to quit, then force it if it's still there. The
 /// browser shows the tab as crashed, with a button to reload it.
 fn close_process(pid: u32) {
+    let start = sampler::proc_start(pid);
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(3));
-        if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        // Only the same process: the pid could have gone to something else.
+        if sampler::proc_start(pid).is_some_and(|s| Some(s) == start) {
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
         }
     });

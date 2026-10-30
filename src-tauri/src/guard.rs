@@ -225,9 +225,16 @@ impl Guard {
                 self.push_event("info", format!("Couldn't save settings: {e}"));
             }
         }
+        // Re-log flags under new rules; a change elsewhere (a notification
+        // setting, say) leaves the log alone.
+        let rules_changed = (old.enabled, old.mode, old.warn_mb, old.kill_mb, old.total_mb, old.total_min_victim_mb, old.prefer_idle)
+            != (cfg.enabled, cfg.mode, cfg.warn_mb, cfg.kill_mb, cfg.total_mb, cfg.total_min_victim_mb, cfg.prefer_idle)
+            || old.idle_cpu_percent != cfg.idle_cpu_percent
+            || old.browser_limits != cfg.browser_limits;
         self.config = cfg;
-        // Re-log flags under the new rules.
-        self.logged.clear();
+        if rules_changed {
+            self.logged.clear();
+        }
     }
 
     /// Turn back on when a timed pause is over. True if it did.
@@ -278,6 +285,8 @@ impl Guard {
         let text = format!("Whole-browser limit{} paused until {}: {why}", self.which(b.id), &at[11..16]);
         self.push_event("info", text.clone());
         lim.hold = Some((until, text));
+        // A close judged after the pause would be judged against stale figures.
+        lim.unjudged = None;
     }
 
     /// Pause the whole-browser limit for one browser when closing its tabs
@@ -350,6 +359,19 @@ impl Guard {
         self.browsers = browsers.to_vec();
         // A browser that quit takes its pauses and hourly count with it.
         self.limits.retain(|id, _| browsers.iter().any(|b| b.id == *id));
+        // A pause ends on time whatever the mode, so Watch only doesn't keep it alive.
+        let ended: Vec<u32> = self
+            .limits
+            .iter_mut()
+            .filter(|(_, lim)| lim.hold.as_ref().is_some_and(|(until, _)| now >= *until))
+            .map(|(id, lim)| {
+                lim.hold = None;
+                *id
+            })
+            .collect();
+        for id in ended {
+            self.push_event("info", format!("The whole-browser limit{} is back on", self.which(id)));
+        }
         let totals = engine::totals(procs);
         // Only a closing mode builds up whole-browser closes to judge.
         if self.config.enabled && self.config.mode.closes() {
@@ -725,6 +747,50 @@ mod tests {
         assert_eq!(run(&mut g, &crowd(&[], 0), t), [1]);
         assert!(run(&mut g, &crowd(&[1], 900), t + secs(61)).is_empty(), "a close that didn't help backs off");
         assert!(g.snapshot.total_hold.is_some());
+    }
+
+    #[test]
+    fn a_pause_ends_on_time_in_watch_only_too() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        run(&mut g, &crowd(&[], 0), t);
+        run(&mut g, &crowd(&[1], 900), t + secs(61));
+        assert!(g.snapshot.total_hold.is_some());
+        g.apply_config(Config { mode: Mode::Watch, ..g.config.clone() });
+        run(&mut g, &crowd(&[1], 900), t + secs(61 + 14 * 60));
+        assert!(g.snapshot.total_hold.is_some(), "still paused in Watch only");
+        run(&mut g, &crowd(&[1], 900), t + secs(61 + 15 * 60));
+        assert!(g.snapshot.total_hold.is_none(), "ended on time without a closing mode");
+        assert!(g.events().any(|e| e.text == "The whole-browser limit is back on"));
+        assert_eq!(g.snapshot.over, 1, "Watch only shows what it would close again");
+    }
+
+    #[test]
+    fn a_pause_forgets_the_close_waiting_to_be_judged() {
+        let mut g = guard(Mode::Close);
+        let t = Instant::now();
+        let mut gone = vec![];
+        for i in 0..3u64 {
+            gone.extend(run(&mut g, &crowd(&gone, 2048), t + secs(61 * i)));
+        }
+        // The third close is still unjudged when the hourly cap pauses, 3 s later.
+        run(&mut g, &crowd(&gone, 2048), t + secs(61 * 2 + 3));
+        let lim = g.limits.values().next().expect("one browser");
+        assert!(lim.hold.is_some() && lim.unjudged.is_none());
+    }
+
+    #[test]
+    fn saving_an_unrelated_setting_doesnt_relog_flags() {
+        let mut g = guard(Mode::Watch);
+        let t = Instant::now();
+        run(&mut g, &[tab(1, 3000)], t);
+        let before = g.events().count();
+        g.apply_config(Config { notify_on_close: true, ..g.config.clone() });
+        run(&mut g, &[tab(1, 3000)], t + secs(15));
+        assert_eq!(g.events().count(), before, "no new Would close line");
+        g.apply_config(Config { kill_mb: 2500, ..g.config.clone() });
+        run(&mut g, &[tab(1, 3000)], t + secs(30));
+        assert_eq!(g.events().count(), before + 1, "a new rule re-logs the flag");
     }
 
     #[test]

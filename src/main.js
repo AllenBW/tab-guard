@@ -347,7 +347,13 @@ form.addEventListener("input", (e) => {
   if (e.target.id === "autostart") return;
   settingsDirty = true;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => saveConfig(readSettings()), 600);
+  saveTimer = setTimeout(async () => {
+    // The tray may have paused or resumed since the last poll; build on what's current.
+    try {
+      view = await invoke("get_view");
+    } catch {}
+    saveConfig(readSettings());
+  }, 600);
 });
 
 $("#autostart").addEventListener("change", async (e) => {
