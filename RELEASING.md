@@ -20,18 +20,35 @@ once a draft is published, so every release gets a quick smoke test first.
 
 ## One-time setup
 
-Repository secrets (Settings → Secrets and variables → Actions):
+The workflow needs seven repository secrets (Settings → Secrets and variables → Actions). They come
+from two 1Password items in the Private vault:
 
-| Secret | What |
-|---|---|
-| `APPLE_CERTIFICATE` | Developer ID Application certificate + key, as a base64 `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
-| `APPLE_ID` | Apple ID email used for notarization |
-| `APPLE_PASSWORD` | an app-specific password for that Apple ID |
-| `APPLE_TEAM_ID` | `B6J5X2WZ98` |
-| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.tauri/tab-guard.key` (update signing) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | contents of `~/.tauri/tab-guard.key.password` |
+- **Apple developer secrets**: the five Apple values, shared by every app signed under the same
+  team. The Developer ID certificate is attached as `Certificates.p12`.
+- **Tab Guard update signing**: this app's update-signing key pair.
 
-The update-signing key pair lives in `~/.tauri/`; keep a copy in the password manager. **If it's
-lost, installed copies can't update** and everyone has to reinstall by hand. Its public half is
+One command sets them all:
+
+```bash
+scripts/release-secrets.sh
+```
+
+It needs the `op`, `gh` and `jq` CLIs and 1Password's CLI integration turned on (1Password →
+Settings → Developer). Approve the prompts and it sets every secret. Each `UPPER_CASE` field of
+either item becomes a secret of that name, and the attached `.p12` becomes `APPLE_CERTIFICATE`, so
+another app can copy the script and point `PROJECT_SECRETS_ITEM` at its own item.
+
+| Secret | What | Item |
+|---|---|---|
+| `APPLE_CERTIFICATE` | Developer ID Application certificate + key, as a base64 `.p12` | Apple |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password | Apple |
+| `APPLE_ID` | Apple ID email used for notarization | Apple |
+| `APPLE_PASSWORD` | an app-specific password for that Apple ID | Apple |
+| `APPLE_TEAM_ID` | `B6J5X2WZ98` | Apple |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.tauri/tab-guard.key` (update signing) | Tab Guard |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | contents of `~/.tauri/tab-guard.key.password` | Tab Guard |
+
+The certificate expires; the Apple item's notes say when and how to make a new one. The
+update-signing key pair is in its item and in `~/.tauri/` on the Mac that made it. **If it's lost,
+installed copies can't update** and everyone has to reinstall by hand. Its public half is
 `plugins.updater.pubkey` in `tauri.conf.json`.
