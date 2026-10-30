@@ -79,16 +79,16 @@ test("with one Firefox, nothing about copies shows", async ({ page }) => {
 test("the process list can be filtered to one Firefox", async ({ page }) => {
   await open(page, "?browsers=2");
   await expect(page.locator("#subline")).toContainText("Firefox 7.7 GB · Nightly 1.1 GB");
-  await expect(rows(page)).toHaveCount(8);
+  await expect(rows(page)).toHaveCount(25);
   await page.getByRole("radio", { name: "Nightly" }).click();
   await expect(rows(page)).toHaveCount(2);
   for (const row of await rows(page).all()) await expect(row).toContainText("Nightly");
   // The arrow keys move along the filter too.
   await page.keyboard.press("ArrowLeft");
   await expect(page.getByRole("radio", { name: "Firefox", exact: true })).toBeFocused();
-  await expect(rows(page)).toHaveCount(6);
+  await expect(rows(page)).toHaveCount(23);
   await page.getByRole("radio", { name: "All" }).click();
-  await expect(rows(page)).toHaveCount(8);
+  await expect(rows(page)).toHaveCount(25);
 });
 
 test("Chrome alone: named in the headline, with its process page", async ({ page }) => {

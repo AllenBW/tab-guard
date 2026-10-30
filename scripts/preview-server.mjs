@@ -29,7 +29,7 @@ const mock = `
   // ?paused=hour starts in a pause that ends in an hour.
   const pausedForAnHour = new URLSearchParams(location.search).get("paused") === "hour";
   let config = { enabled: !pausedForAnHour, paused_until: pausedForAnHour ? now() + 3600 : null, mode: "watch", warn_mb: 1024, kill_mb: 2048, total_mb: 8192, total_min_victim_mb: 400,
-    total_backoff_mins: 15, total_max_per_hour: 3, share_usage: false, auto_update: true, welcomed: false,
+    total_backoff_mins: 15, total_max_per_hour: 3, auto_update: true, welcomed: false,
     interval_secs: 15, kill_cooldown_secs: 60, prefer_idle: true, idle_cpu_percent: 2, notify_on_close: false,
     browser_limits: {} };
   const rows = [
@@ -39,6 +39,9 @@ const mock = `
     { pid: 48880, browser: 48857, kind: "gpu", mem_mb: 777, cpu: 0.1, age_secs: 32359, growth_mb_per_min: 0, status: "ok", reason: null, action: null },
     { pid: 48857, browser: 48857, kind: "main", mem_mb: 743, cpu: 3.8, age_secs: 32360, growth_mb_per_min: 0, status: "ok", reason: null, action: null },
     tab(73899, 616, 0.6, 32172, 0, several ? 90001 : 48857), tab(75737, 474, 0, 2011, 0, several ? 90001 : 48857), { ...tab(48984, 442, 0.3, 32358), status: "spared", reason: "You chose to spare this tab" },
+    // The other 17 tabs, so the table holds the 24 the headline counts and the sizes add up to its total.
+    ...[312, 240, 188, 150, 131, 118, 102, 96, 88, 76, 70, 64, 58, 44, 36, 28, 22].map((mb, i) =>
+      tab(51000 + i * 37, mb, [0.2, 0, 0.1, 0, 0, 0.4, 0][i % 7], 32300 - i * 900, 0)),
   ];
   const events = [
     { at: now() - 30, kind: "would-close", text: "Would close tab process 48991 (2.2 GB): Over the 2.0 GB per-tab limit" },
@@ -50,7 +53,7 @@ const mock = `
   // Like the app, the latest update check's result is kept and shown on every refresh.
   let updateStatus = "Tab Guard 1.0.0 is the latest version (checked 09:15)";
   const handlers = {
-    get_view: () => ({ config, events, version: "1.0.0", usage_available: true,
+    get_view: () => ({ config, events, version: "1.0.0",
       limit_targets: (several ? [first, second] : [first])
         .map(({ key, name }) => ({ key, name, running: true, own: key in config.browser_limits })),
       update_status: updateStatus, spared: [48984], log_path: "~/Library/Logs/Tab Guard.log",
